@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sec-auditor-config
+  namespace: sec-auditor
+data:
+  SEC_AUDITOR_ALLOWED_ORGANIZATIONS: '["ORG_ID"]'
+  SEC_AUDITOR_AUTH_MODE: jwt
+  SEC_AUDITOR_JWT_ISSUER: https://idp.example.com/
+  SEC_AUDITOR_JWT_AUDIENCE: https://sec-auditor.example.com/mcp
+  SEC_AUDITOR_JWKS_URL: https://idp.example.com/.well-known/jwks.json
+  SEC_AUDITOR_JWT_ALGORITHMS: '["RS256"]'
+  SEC_AUDITOR_ALLOWED_SUBJECTS: '["YOUR_AGENT_SUBJECT"]'
+  SEC_AUDITOR_REQUIRED_SCOPES: '["security:read"]'
+  SEC_AUDITOR_PUBLIC_URL: https://sec-auditor.example.com/mcp
+  SEC_AUDITOR_ALLOWED_HOSTS: '["sec-auditor.example.com", "sec-auditor.sec-auditor.svc.cluster.local:8000", "sec-auditor:8000"]'
+  SEC_AUDITOR_STATE_PATH: /data/sec-auditor.sqlite3
+  SEC_AUDITOR_MAX_CONCURRENCY: '12'
+  SEC_AUDITOR_PER_API_CONCURRENCY: '4'
+  SEC_AUDITOR_REQUESTS_PER_SECOND: '5'
+  SEC_AUDITOR_MAX_BATCH_SIZE: '20'
+  SEC_AUDITOR_MAX_PAGE_SIZE: '200'
+  SEC_AUDITOR_MAX_LOG_HOURS: '24'
+  SEC_AUDITOR_MAX_SCAN_PAGES: '20'
+  SEC_AUDITOR_MAX_SCAN_RESOURCES: '5000'
+  SEC_AUDITOR_MAX_SCAN_SECONDS: '600'
+  SEC_AUDITOR_EVIDENCE_TTL_SECONDS: '3600'
+  SEC_AUDITOR_RETENTION_SECONDS: '86400'
+  SEC_AUDITOR_KUBERNETES_ENDPOINT: auto

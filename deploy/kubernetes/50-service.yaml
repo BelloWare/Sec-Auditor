@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: sec-auditor
+  namespace: sec-auditor
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sec-auditor
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

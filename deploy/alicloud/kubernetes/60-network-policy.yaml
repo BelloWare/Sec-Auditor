@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sec-auditor-ingress
+  namespace: sec-auditor
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sec-auditor
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # BOTH selectors must match. Label only the intended agent namespace
+        # and pods (or your authenticated TLS gateway's namespace and pods).
+        - namespaceSelector:
+            matchLabels:
+              sec-auditor-client: 'true'
+          podSelector:
+            matchLabels:
+              sec-auditor-client: 'true'
+      ports:
+        - protocol: TCP
+          port: 8000
+# Egress destinations depend on the deployment: DNS, Alibaba APIs/STS/SLS,
+# the configured JWKS service and registered ACK control-plane endpoints.
+# Review docs/alicloud-deployment.md before adding endpoint-aware egress rules.

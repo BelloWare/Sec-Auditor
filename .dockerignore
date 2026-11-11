@@ -1,0 +1,16 @@
+.git
+.venv
+.env
+.state
+*.sqlite3*
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+tests
+docs
+deploy
+dist
+build
+credentials*.json
+service-account*.json

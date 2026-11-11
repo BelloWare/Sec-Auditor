@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+pytest-of-*/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+build-env-*/
+*.egg-info/
+.env
+*.sqlite3*
+.state/
+credentials*.json
+service-account*.json

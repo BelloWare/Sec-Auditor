@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sec-auditor-ingress
+  namespace: sec-auditor
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sec-auditor
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # BOTH selectors must match. Label only the intended agent namespace
+        # and pods (or your authenticated TLS gateway's namespace and pods).
+        - namespaceSelector:
+            matchLabels:
+              sec-auditor-client: 'true'
+          podSelector:
+            matchLabels:
+              sec-auditor-client: 'true'
+      ports:
+        - protocol: TCP
+          port: 8000
+# Egress is intentionally not blocked by this example. Its destinations depend
+# on the cluster: DNS, GKE metadata, Google APIs, the configured JWKS service,
+# and the actual GKE control-plane endpoints. See docs/deployment.md before
+# adding an egress policy; a generic deny-all would break Workload Identity.

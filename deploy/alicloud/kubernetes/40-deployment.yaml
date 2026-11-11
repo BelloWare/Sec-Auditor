@@ -1,0 +1,132 @@
+# Two distinct token audiences: RRSA cloud APIs and the Kubernetes API.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sec-auditor
+  namespace: sec-auditor
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sec-auditor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sec-auditor
+    spec:
+      serviceAccountName: sec-auditor
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: auditor
+        image: REPLACE_REGISTRY/sec-auditor@sha256:REPLACE_WITH_IMAGE_DIGEST
+        imagePullPolicy: IfNotPresent
+        args:
+        - serve
+        - --transport
+        - http
+        - --host
+        - 0.0.0.0
+        - --port
+        - '8000'
+        envFrom:
+        - configMapRef:
+            name: sec-auditor-config
+        ports:
+        - name: http
+          containerPort: 8000
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: '1'
+            memory: 1Gi
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: http
+            httpHeaders:
+            - name: Host
+              value: sec-auditor.sec-auditor.svc.cluster.local:8000
+          failureThreshold: 30
+          periodSeconds: 2
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+            httpHeaders:
+            - name: Host
+              value: sec-auditor.sec-auditor.svc.cluster.local:8000
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+            httpHeaders:
+            - name: Host
+              value: sec-auditor.sec-auditor.svc.cluster.local:8000
+          periodSeconds: 20
+        volumeMounts:
+        - name: state
+          mountPath: /data
+        - name: tmp
+          mountPath: /tmp
+        - name: rrsa-token
+          mountPath: /var/run/sec-auditor/rrsa
+          readOnly: true
+        - name: kubernetes-token
+          mountPath: /var/run/sec-auditor/kubernetes
+          readOnly: true
+        env:
+        - name: ALIBABA_CLOUD_ROLE_ARN
+          value: acs:ram::1234567890123456:role/sec-auditor
+        - name: ALIBABA_CLOUD_OIDC_PROVIDER_ARN
+          value: acs:ram::1234567890123456:oidc-provider/ack-rrsa-REPLACE_CLUSTER_ID
+        - name: ALIBABA_CLOUD_OIDC_TOKEN_FILE
+          value: /var/run/sec-auditor/rrsa/token
+        - name: ALIBABA_CLOUD_ECS_METADATA_DISABLED
+          value: 'true'
+      volumes:
+      - name: state
+        persistentVolumeClaim:
+          claimName: sec-auditor-state
+      - name: tmp
+        emptyDir:
+          sizeLimit: 64Mi
+      - name: rrsa-token
+        projected:
+          defaultMode: 292
+          sources:
+          - serviceAccountToken:
+              audience: sts.aliyuncs.com
+              expirationSeconds: 3600
+              path: token
+      - name: kubernetes-token
+        projected:
+          defaultMode: 292
+          sources:
+          - serviceAccountToken:
+              expirationSeconds: 3600
+              path: token
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+              - key: ca.crt
+                path: ca.crt

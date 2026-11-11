@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sec-auditor-state
+  namespace: sec-auditor
+spec:
+  accessModes: [ReadWriteOnce]
+  # Uses the cluster's default provisioner. Choose your required storage class
+  # and CMEK policy before deployment when those are organization requirements.
+  resources:
+    requests:
+      storage: 10Gi

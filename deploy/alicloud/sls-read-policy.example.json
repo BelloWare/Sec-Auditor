@@ -1,0 +1,14 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "log:GetLogStoreLogs"
+      ],
+      "Resource": [
+        "acs:log:cn-hangzhou:1234567890123456:project/security-audit/logstore/vpc_flows"
+      ]
+    }
+  ]
+}
