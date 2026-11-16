@@ -198,6 +198,55 @@ def test_explicit_credentials_and_opaque_configuration_are_normalized(field):
     assert result["data"]["cluster_id"] == "c-test"
 
 
+@pytest.mark.parametrize("field", ["DisasterRecoveryInfo", "disaster_recovery_info"])
+@pytest.mark.parametrize(
+    "recovery_info",
+    [
+        json.dumps({"replicatorAccount": "replication", "replicatorPassword": CANARY}),
+        {"replicatorAccount": "replication", "replicatorPassword": CANARY},
+        "invalid-json:" + CANARY,
+    ],
+)
+def test_rds_recovery_details_are_opaque_even_when_passwords_are_json_encoded(field, recovery_info):
+    result = projected_record(
+        "alicloud.rds.instances",
+        {"DBInstanceId": "rm-test", "DeletionProtection": True, field: recovery_info},
+    )
+    assert CANARY not in json.dumps(result)
+    assert result["data"][field] == REDACTED
+    assert f"data.{field}" in result["redacted_paths"]
+    assert result["data"]["DBInstanceId"] == "rm-test"
+    assert result["data"]["DeletionProtection"] is True
+
+
+@pytest.mark.parametrize(
+    "request_field,response_field",
+    [("HealthCheckReq", "HealthCheckExp"), ("health_check_req", "health_check_exp")],
+)
+def test_udp_health_check_bodies_are_removed_without_losing_listener_controls(
+    request_field, response_field
+):
+    payload = CANARY.replace("_", "")  # UDP health checks accept alphanumeric payloads.
+    result = projected_record(
+        "alicloud.slb.udpListeners",
+        {
+            "LoadBalancerId": "lb-test",
+            "ListenerPort": 53,
+            "AclStatus": "on",
+            "HealthCheck": "on",
+            request_field: payload,
+            response_field: payload,
+        },
+    )
+    assert payload not in json.dumps(result)
+    assert result["data"][request_field] == REDACTED
+    assert result["data"][response_field] == REDACTED
+    assert {f"data.{request_field}", f"data.{response_field}"} <= set(result["redacted_paths"])
+    assert result["data"]["LoadBalancerId"] == "lb-test"
+    assert result["data"]["ListenerPort"] == 53
+    assert result["data"]["AclStatus"] == result["data"]["HealthCheck"] == "on"
+
+
 def test_policy_projection_preserves_literal_percent_sequences_in_valid_json():
     policy = {
         "Version": "1",

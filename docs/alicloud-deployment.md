@@ -2,43 +2,58 @@
 
 The Python package and container support either cloud independently or both in
 one server. Google ADC and Alibaba credentials are separate. On ACK, use RRSA
-for Alibaba API calls and a second projected Kubernetes service-account token
-for native Pod/policy reads. On GKE, keep Workload Identity for Google and supply
-an independently configured Alibaba OIDC trust/credential binding.
+for Alibaba API calls. Optional native Pod/policy reads use a second projected
+Kubernetes service-account token. On GKE, keep Workload Identity for Google and
+supply an independently configured Alibaba OIDC trust/credential binding.
 
 ## Account permissions
 
-Start from `deploy/alicloud/read-policy.json`, generated from the exact compiled
-catalog with `sec-auditor ram-policy`. Review its read actions and reduce the
-resource scope where supported. Attach it to the dedicated RAM auditing role.
-No `oss:GetObject`, `oss:ListObjects`, `kms:GetSecretValue`, decryption, cluster
-kubeconfig retrieval, instance user-data reads or resource mutations are granted.
-The RDS TLS-description permission is deliberately absent because its response
-can contain server private-key material. Existing Cloud Config findings may supply
-TLS evidence instead; the service must not infer missing TLS settings as passing.
+Start with the recommended [strict metadata IAM profile](../deploy/alicloud/terraform/README.md).
+Its standalone
+[`alicloud_security_auditor.tf`](../deploy/alicloud/terraform/alicloud_security_auditor.tf)
+attaches an exact 202-action allowlist across 34 RAM namespaces and a matching
+`Deny`/`NotAction` guardrail to an existing dedicated RAM role. Run Terraform as
+your provisioning identity and configure the auditing role's narrow trust
+separately. The file needs no external policy JSON or MCP installation.
 
-SLS access is separate: edit `deploy/alicloud/sls-read-policy.example.json` to the
-exact permitted project/logstore ARN. Grant `log:GetLogStoreLogs` only on the stores
-you register. Logs must already be collected and indexed. The MCP does not enable
-logging, create indexes or change retention.
+This profile permits reviewed resource/configuration reads and denies content
+reads and mutations, including ActionTrail `LookupEvents`, SLS log payloads and
+selected ACK, RDS, Cloud Config and finding APIs with mixed/opaque responses.
+The query catalog can still advertise those operations; a permission error is
+an expected coverage gap, not evidence that a security check passed.
+
+The generated [`read-policy.json`](../deploy/alicloud/read-policy.json) is the
+75-action catalog permission contract, including 11 actions excluded by the
+strict profile. It relies on application response projection and is intended
+only for a separately reviewed broader deployment. If that deployment needs
+SLS records, scope `sls-read-policy.example.json` to the exact registered
+project/logstore ARNs. Adding an SLS allow to the strict role does not override
+its deny. Logs must already be collected and indexed; the MCP does not enable
+logging or change retention.
 
 Read [authentication and account boundaries](alicloud-authentication.md) for the
 STS identity proof and official credential chain. The runtime verifies the
 credential's actual account; a list of allowed accounts does not create cross-
 account sessions. Use a separately bound server for each account when needed.
 
-## ACK deployment example
+## ACK deployment example and optional workload access
 
 `deploy/alicloud/kubernetes/` contains a complete deployment example: namespace,
 service account, explicit read-only RBAC, configuration, hardened deployment,
 ClusterIP Service and ingress NetworkPolicy. No persistent state volume is needed.
+
+The example includes native Kubernetes workload access. For cloud metadata
+only, omit its Kubernetes RBAC binding, native API token projection and cluster
+registration. The RAM profile does not restrict a separately authenticated
+Kubernetes identity.
 
 Before applying it:
 
 1. Enable ACK RRSA and obtain the cluster OIDC provider ARN and issuer.
 2. Create a RAM role whose OIDC trust restricts issuer, `oidc:aud=sts.aliyuncs.com`,
    and `oidc:sub=system:serviceaccount:sec-auditor:sec-auditor`.
-3. Grant the reviewed metadata policy and, if used, the exact SLS policy.
+3. Attach the strict Terraform policies to the RAM role. Log-content collection
+   uses a separate broader deployment/role as described above.
 4. Replace account, region, cluster ID, RAM role and OIDC provider placeholders.
    Set an immutable image digest built from this repository. Review service
    resource limits and network rules.
@@ -50,6 +65,11 @@ Before applying it:
    pod logs, exec, impersonation or writes. For narrower namespace access, adapt
    the binding to your selected namespaces and keep ungranted reads as explicit
    coverage errors.
+
+Even without Secret-object permission, allowed Pod definitions contain literal
+environment values and commands. Native workload collection relies on the
+connector's projection to remove those values; Kubernetes RBAC cannot hide
+individual fields before the connector receives them.
 
 The example manually configures the RRSA token projection, so it does not depend
 on the optional pod identity webhook. There are two volumes:
@@ -107,6 +127,9 @@ credentials are not fetched from untrusted resource documents.
 
 ## Registered SLS logstores
 
+This section applies only to a separate broader deployment authorized to read
+log records. Registering a logstore does not bypass the strict RAM guardrail.
+
 Set `SEC_AUDITOR_ALICLOUD_LOGSTORES` to operator-selected destinations, for example:
 
 ```json
@@ -130,10 +153,12 @@ must be retried at the same offset and are never marked complete.
 
 ## Live acceptance
 
-Run representative reads using the actual deployed role: one ECS page, a nested
-security-group page, an OSS bucket setting with ownership verification, RAM policy
-metadata, one registered Pod page, a short ActionTrail interval, and a registered
-SLS interval. Confirm expected denials, pagination and redaction markers. A healthy
+For the strict profile, run representative permitted reads using the actual
+deployed role: one ECS page, nested security-group rules, an OSS bucket setting
+with ownership verification, RAM policy metadata and flow-log configuration.
+Confirm expected denials for ActionTrail events, SLS records and excluded mixed
+configuration/finding calls. Test optional native Pod reads and broader-profile
+log reads separately, including their projection and pagination. A healthy
 HTTP readiness endpoint confirms process readiness, not cloud or Kubernetes
 permissions. This repository was tested offline with official SDK signers and
 native-shaped fixtures; it has not been deployed into your account.

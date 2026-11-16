@@ -162,6 +162,14 @@ explains where live configuration, existing reports or additional sensors are
 needed. Add new operations through the [reviewed catalog extension](docs/extending-providers.md)
 path; an API being named Get or Describe is not sufficient to make it safe.
 
+Query support and IAM permission are separate. The recommended Alibaba
+[strict metadata IAM profile](deploy/alicloud/terraform/README.md) grants 202
+reviewed actions across 34 RAM namespaces, including services without a connector
+adapter yet. It also denies some registered queries whose native responses mix
+metadata with content. `capabilities` describes implemented queries and their
+required permissions; it does not establish that the deployed identity holds
+those permissions. Denied reads remain explicit coverage gaps.
+
 ## Authentication and read-only boundaries
 
 The MCP caller authenticates to the connector. Cloud requests use the deployment's
@@ -179,6 +187,18 @@ GCP starting grant; particular APIs, log views or inventory products can require
 additional permissions or configuration. Denials are returned to the caller.
 Nothing grants permissions or enables cloud services automatically.
 
+For Alibaba, use the standalone
+[`alicloud_security_auditor.tf`](deploy/alicloud/terraform/alicloud_security_auditor.tf)
+to attach an exact metadata allowlist and a matching `Deny`/`NotAction` guardrail
+to an existing dedicated RAM role. The guardrail rejects actions outside that
+allowlist even if another policy grants them. The generated
+[`read-policy.json`](deploy/alicloud/read-policy.json) is the 75-action connector
+catalog permission contract, including 11 mixed-content or opaque-response
+actions excluded by the strict profile. Those queries rely on application
+projection; that policy alone does not enforce a metadata-only boundary in RAM.
+ActionTrail event bodies and SLS log payloads require a separate, deliberately
+broader deployment. An additional log-read allow cannot override the strict guard.
+
 The routes exclude GCS/OSS object listing and downloads, Kubernetes Secrets and
 ConfigMaps, secret payloads, private key material, database rows, message bodies,
 pod/VM execution and cloud mutations. Known sensitive fields in allowed metadata
@@ -188,6 +208,12 @@ from that already projected result; it cannot recover removed content. Remaining
 names, labels and policy text are untrusted data and can contain user-authored
 values. Projection is not a guarantee that arbitrary metadata never contains a
 secret.
+
+The supplied Kubernetes RBAC grants no Secret-object access but cannot hide
+literal environment values or commands inside an allowed Pod definition. Native
+workload reads use the connector's projection as well as a separate Kubernetes
+identity; the Alibaba RAM profile does not impose field restrictions on
+Kubernetes responses.
 
 ## Pagination, response limits and replicas
 

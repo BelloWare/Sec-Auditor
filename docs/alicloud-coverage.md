@@ -5,7 +5,8 @@ The catalog currently contains **75 configuration/report query operations across
 65 resource kinds and 13 services**. `capabilities` is the runtime authority for
 the exact operations, required identifiers, selectors, page limits and RAM
 permissions. A resource kind can offer both `list` and `get`; those are distinct
-query contracts, not additional arbitrary API access.
+query contracts, not additional arbitrary API access. `capabilities` reports
+required permissions; it does not prove the deployed identity has them.
 
 The adapter uses official Alibaba credential and signing SDKs through the bounded
 transport. It does not invoke a shell, `aliyun`, `gcloud`, a Kubernetes credential
@@ -36,14 +37,39 @@ account-wide native pagination and filter bucket metadata to the selected
 region. Consequently, an empty OSS page can still have a continuation.
 
 See [Alibaba authentication](alicloud-authentication.md) for temporary
-credentials, ECS RAM roles, ACK RRSA, cross-cloud identity considerations and
-the generated [custom RAM policy](../deploy/alicloud/read-policy.json). A broad
-system read-only role can include reads of application data; the custom policy
-enumerates only reviewed actions. Bucket-specific operations also require
+credentials, ECS RAM roles, ACK RRSA, cross-cloud identity considerations and the
+recommended [strict metadata IAM profile](../deploy/alicloud/terraform/README.md).
+The standalone [Terraform file](../deploy/alicloud/terraform/alicloud_security_auditor.tf)
+grants 202 exact actions across 34 RAM namespaces and explicitly denies every
+action outside that list. The generated
+[`read-policy.json`](../deploy/alicloud/read-policy.json) instead describes the
+75-action connector catalog, including 11 mixed-content or opaque-response
+actions excluded by the strict profile. Those catalog queries depend on output
+projection, which does not provide the same native RAM boundary.
+Bucket-specific operations also require
 `oss:GetBucketInfo` because the transport proves the bucket owner and region
 before reading further metadata.
 
 ## Security questions and actual evidence
+
+The question matrix below describes registered connector capabilities. The
+strict IAM profile intentionally denies the following catalog actions; those queries return
+coverage errors even though an adapter exists:
+
+| Query family | Actions denied by the strict profile |
+| --- | --- |
+| Audit events | `actiontrail:LookupEvents` |
+| ACK cluster/node-pool configuration | `cs:GetClusters`, `cs:DescribeClusterDetail`, `cs:DescribeClusterNodePools` |
+| RDS instance detail | `rds:DescribeDBInstanceAttribute` |
+| Cloud Config rule detail/evidence | `config:GetConfigRule`, `config:ListConfigRuleEvaluationResults` |
+| Security Center and image findings | `yundun-sas:DescribeRiskCheckResult`, `yundun-sas:DescribeVulList`, `cr:GetScan` |
+| SLB UDP listener detail | `slb:DescribeLoadBalancerUDPListenerAttribute` |
+
+SLS log-record queries are also denied. VPC flow-log configuration, trail
+configuration/status and reviewed SLS configuration remain available where
+implemented. Event/log contents require a separate broader deployment; an extra
+allow cannot override the strict guardrail. No denied or unsupported read should
+be interpreted as a passing assessment.
 
 | Question family | Supported evidence | Interpretation and limits |
 | --- | --- | --- |
@@ -68,7 +94,8 @@ Alibaba's `rds:DescribeDBInstanceSSL` action can return **`ServerKey`, the
 PostgreSQL server certificate private key**. The catalog does not include that
 action and the generated RAM policy does not grant it. The server does not fetch
 a private key and then attempt to hide it. RDS TLS posture can be considered from
-existing Cloud Config evaluation evidence when an appropriate rule is deployed;
+existing Cloud Config evaluation evidence in a separately authorized broader
+deployment when an appropriate rule is deployed;
 this adapter does not claim a direct live TLS check for every RDS engine.
 
 This distinction matters when extending the catalog: a method called
@@ -132,7 +159,9 @@ queries require an instance ID as `parent` and
 require `selectors.tag`. These inputs are identifiers for compiled reads, not
 arbitrary Alibaba API parameters.
 
-The log tool supplies default bounds when omitted and retains the exact bounds
+The following ActionTrail example requires the separate broader profile; it is
+denied under the recommended strict IAM profile. The log tool supplies default
+bounds when omitted and retains the exact bounds
 inside its continuation. Direct resource access to ActionTrail events requires
 explicit bounds:
 
@@ -194,6 +223,12 @@ and existing compliance results for additional supported services, but those
 observations must not be represented as equivalent to native live configuration
 reads. Regional availability, editions, API enablement and actual RAM grants are
 validated only when an operator runs a query against their account.
+
+The strict Terraform IAM profile includes reviewed actions for additional service
+families, but granting them does not implement their connector routes. Its
+Resource Center inventory permissions likewise do not add a Resource Center
+adapter to this release. Use the Terraform profile's own coverage notes for IAM
+scope and this document for implemented query contracts.
 
 This code has offline contract and security-boundary tests. No live Alibaba
 account credentials were supplied during implementation, so it has not been

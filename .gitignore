@@ -15,3 +15,9 @@ build-env-*/
 .state/
 credentials*.json
 service-account*.json
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log

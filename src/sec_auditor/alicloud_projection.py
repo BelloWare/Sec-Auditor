@@ -57,6 +57,12 @@ _OPAQUE_FIELDS |= {
     "FixCmd",
     "AddedBy",
     "CveLocation",
+    # RDS serializes replication credentials inside this JSON string. Redact
+    # the whole field; do not decode arbitrary configuration to find secrets.
+    "DisasterRecoveryInfo",
+    # CLB UDP listener health checks contain application request/response bodies.
+    "HealthCheckReq",
+    "HealthCheckExp",
 }
 _OPAQUE_NORMALIZED = frozenset(_normalized(key) for key in _OPAQUE_FIELDS)
 _POLICY_NORMALIZED = frozenset(_normalized(key) for key in _POLICY_FIELDS)
