@@ -154,7 +154,7 @@ explicit bounds:
 }
 ```
 
-## Pagination, evidence and assessments
+## Pagination and returned data
 
 Native `NextToken`/`MaxResults`, RAM marker/truncation, numeric pages and ACK's
 nested `page_info` are normalized to the shared opaque MCP cursor. Native tokens
@@ -167,13 +167,15 @@ transactional snapshot.
 Some read APIs have no pagination, including several RAM attachments, ACK node
 pools and exact RDS subresources. Those responses are bounded by the transport's
 byte cap, sorted and locally paged. Continuations reread the source and explicitly
-report best-effort consistency. A default assessment reads only top-level
-queries marked `default_scan`; it does not pretend that exact/nested queries have
-run. Supply explicit assessment `queries` for discovered security groups, roles,
-buckets, keys, RDS instances, rule evaluations and registry tags.
+report best-effort consistency. The agent explicitly supplies discovered parents
+and IDs for security groups, roles, buckets, keys, RDS instances, rule evaluations
+and registry tags. The connector never schedules an automatic scan.
 
-Evidence is observed through the service's projection, byte limits, caller
-ownership and retention policy. The Alibaba adapter additionally removes known
+Returned data passes mandatory projection and byte limits without being retained.
+An oversized page returns an explicit error, not a cursor that skips omitted rows;
+retry with fewer batch queries or narrower output fields. Page size is bound to
+continuations, so changing it requires restarting without a cursor. The Alibaba
+adapter additionally removes known
 ACK bootstrap/password/opaque fields, arbitrary Cloud Config annotations and
 input parameters, Security Center exploit/report payloads, and Container
 Registry report commands. Policy JSON is decoded before projection so an encoded

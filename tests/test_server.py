@@ -18,11 +18,11 @@ from starlette.testclient import TestClient
 
 from sec_auditor.__main__ import main
 from sec_auditor.config import Settings
+from sec_auditor.connector import CloudConnector
 from sec_auditor.models import CollectionResult, ResourceRecord
 from sec_auditor.providers.gcp import GCPProvider
 from sec_auditor.providers.kubernetes import normalize_kind
 from sec_auditor.server import build_server, create_app
-from sec_auditor.service import SecurityService
 from sec_auditor.transport import CloudAPIError
 
 PUBLIC_URL = "https://audit.example.com/mcp"
@@ -30,18 +30,11 @@ CLUSTER = "projects/prod-a/locations/us-central1/clusters/apps"
 TOKENS = {"agent-a": "integration-token-a", "agent-b": "integration-token-b"}
 TOOLS = {
     "capabilities",
-    "list_security_checks",
     "search_inventory",
     "collect_resources",
     "inspect_kubernetes",
     "get_iam_context",
     "query_logs",
-    "run_security_checks",
-    "get_evidence",
-    "start_assessment",
-    "get_assessment",
-    "list_assessment_results",
-    "cancel_assessment",
 }
 
 
@@ -212,6 +205,11 @@ class FakeKubernetes:
             ]
         )
 
+    async def get_object(self, cluster, kind, resource_id, *, namespace=None):
+        assert resource_id == "web"
+        assert namespace == "apps"
+        return await self.list_objects(cluster, kind, namespace=namespace, page_size=1)
+
     async def aclose(self):
         self.closed = True
 
@@ -225,14 +223,15 @@ def setup(tmp_path):
         static_tokens={
             actor: hashlib.sha256(token.encode()).hexdigest() for actor, token in TOKENS.items()
         },
-        state_path=tmp_path / "state" / "service.sqlite3",
     )
     google = FakeGoogle()
     kubernetes = FakeKubernetes()
-    service = SecurityService(
+    connector = CloudConnector(
         settings, client=google, gcp=GCPProvider(google), kubernetes=kubernetes
     )
-    return SimpleNamespace(settings=settings, google=google, kubernetes=kubernetes, service=service)
+    return SimpleNamespace(
+        settings=settings, google=google, kubernetes=kubernetes, connector=connector
+    )
 
 
 def rpc(client, method, params=None, *, actor="agent-a", version="2026-07-28", headers=None):
@@ -280,10 +279,10 @@ def call(client, name, arguments=None, *, actor="agent-a", version="2026-07-28")
 
 
 def test_http_lifespan_health_and_authentication_boundary(setup):
-    assert setup.service.ready is False
-    app = create_app(setup.settings, service=setup.service)
+    assert setup.connector.ready is False
+    app = create_app(setup.settings, connector=setup.connector)
     with TestClient(app, base_url=PUBLIC_URL.removesuffix("/mcp")) as client:
-        assert setup.service.ready is True
+        assert setup.connector.ready is True
         assert client.get("/healthz").json() == {"status": "ok"}
         assert client.get("/readyz").json() == {"status": "ready"}
         assert rpc(client, "tools/list", actor=None).status_code == 401
@@ -292,14 +291,14 @@ def test_http_lifespan_health_and_authentication_boundary(setup):
             == 401
         )
         assert setup.google.calls == []
-    assert setup.service.ready is False
+    assert setup.connector.ready is False
     assert setup.google.closed is True
     assert setup.kubernetes.closed is True
 
 
 @pytest.mark.parametrize("version", ["2026-07-28", "2025-11-25"])
 def test_all_tools_are_discoverable_and_callable_over_http(setup, version):
-    app = create_app(setup.settings, service=setup.service)
+    app = create_app(setup.settings, connector=setup.connector)
     with TestClient(app, base_url=PUBLIC_URL.removesuffix("/mcp")) as client:
         if version == "2025-11-25":
             initialized = rpc(
@@ -326,8 +325,6 @@ def test_all_tools_are_discoverable_and_callable_over_http(setup, version):
         capability = invoke("capabilities")
         assert capability["providers"] == ["gcp"]
         assert capability["boundaries"]["object_downloads"] is False
-        definitions = invoke("list_security_checks", {"resource_kind": "gcp.compute.instances"})
-        assert definitions["count"] > 0
         inventory = invoke("search_inventory", {"scope": "projects/prod-a"})
         assert inventory["items"][0]["freshness"] == "inventory"
         resource_query = {"kind": "gcp.compute.instances", "project": "prod-a"}
@@ -351,45 +348,18 @@ def test_all_tools_are_discoverable_and_callable_over_http(setup, version):
             ]
             == "operator@example.com"
         )
-        checks = invoke(
-            "run_security_checks", {"queries": [resource_query], "include_passes": True}
-        )
-        assert checks["results"][0]["evaluation"]["checks_evaluated"] > 0
-        evidence = invoke("get_evidence", {"evidence_id": first["evidence_id"]})
-        assert evidence["items"] == first["items"]
-        job = invoke(
-            "start_assessment",
-            {
-                "request": {
-                    "projects": ["prod-a"],
-                    "resource_kinds": ["gcp.compute.instances"],
-                    "include_kubernetes": False,
-                }
-            },
-        )
-        identifier = job["assessment_id"]
-        status = invoke("get_assessment", {"assessment_id": identifier})
-        assert status["status"] in {"queued", "running", "completed"}
-        result = invoke("list_assessment_results", {"assessment_id": identifier})
-        assert result["assessment_id"] == identifier
-        cancellation = invoke("cancel_assessment", {"assessment_id": identifier})
-        assert cancellation["id"] == identifier
         assert observed == TOOLS
         assert "PRIVATE" not in json.dumps(resources)
 
 
-def test_caller_isolation_survives_http_dispatch_evidence_and_cursor_roundtrips(setup):
+def test_caller_isolation_survives_http_dispatch_and_cursor_roundtrips(setup):
     with TestClient(
-        create_app(setup.settings, service=setup.service), base_url=PUBLIC_URL.removesuffix("/mcp")
+        create_app(setup.settings, connector=setup.connector),
+        base_url=PUBLIC_URL.removesuffix("/mcp"),
     ) as client:
         query = {"kind": "gcp.compute.instances", "project": "prod-a", "page_size": 1}
         first = call(client, "collect_resources", {"queries": [query]})["results"][0]
-        evidence_id, cursor = first["evidence_id"], first["next_cursor"]
-        owned = call(client, "get_evidence", {"evidence_id": evidence_id})
-        assert owned["items"][0]["data"]["name"] == "vm-one"
-        denied = call(client, "get_evidence", {"evidence_id": evidence_id}, actor="agent-b")
-        assert denied["error"]["code"] == "INVALID_ARGUMENT"
-        assert "vm-one" not in json.dumps(denied)
+        cursor = first["next_cursor"]
         before = len(setup.google.calls)
         wrong_cursor = call(
             client, "collect_resources", {"queries": [{**query, "cursor": cursor}]}, actor="agent-b"
@@ -404,7 +374,8 @@ def test_caller_isolation_survives_http_dispatch_evidence_and_cursor_roundtrips(
 
 def test_http_partial_failures_preserve_successes_and_coverage(setup):
     with TestClient(
-        create_app(setup.settings, service=setup.service), base_url=PUBLIC_URL.removesuffix("/mcp")
+        create_app(setup.settings, connector=setup.connector),
+        base_url=PUBLIC_URL.removesuffix("/mcp"),
     ) as client:
         result = call(
             client,
@@ -461,12 +432,12 @@ def test_http_partial_failures_preserve_successes_and_coverage(setup):
             {"queries": [{"cluster": CLUSTER, "kind": "Pod", "path": "/api/v1/secrets"}]},
         ),
         ("query_logs", {"queries": [{"project": "prod-a", "category": "raw_payload"}]}),
-        ("start_assessment", {"request": {}}),
     ],
 )
 def test_mcp_input_schema_blocks_extra_operations_and_invalid_shapes(setup, tool, arguments):
     with TestClient(
-        create_app(setup.settings, service=setup.service), base_url=PUBLIC_URL.removesuffix("/mcp")
+        create_app(setup.settings, connector=setup.connector),
+        base_url=PUBLIC_URL.removesuffix("/mcp"),
     ) as client:
         response = rpc(client, "tools/call", {"name": tool, "arguments": arguments})
         assert response.status_code == 200
@@ -478,7 +449,8 @@ def test_mcp_input_schema_blocks_extra_operations_and_invalid_shapes(setup, tool
 
 def test_arbitrary_tools_resource_kinds_and_secret_reads_have_no_execution_path(setup):
     with TestClient(
-        create_app(setup.settings, service=setup.service), base_url=PUBLIC_URL.removesuffix("/mcp")
+        create_app(setup.settings, connector=setup.connector),
+        base_url=PUBLIC_URL.removesuffix("/mcp"),
     ) as client:
         unknown = rpc(
             client, "tools/call", {"name": "run_gcloud", "arguments": {"command": "anything"}}
@@ -509,7 +481,8 @@ def test_arbitrary_tools_resource_kinds_and_secret_reads_have_no_execution_path(
 
 def test_dns_rebinding_and_origin_controls_guard_the_mcp_endpoint(setup):
     with TestClient(
-        create_app(setup.settings, service=setup.service), base_url=PUBLIC_URL.removesuffix("/mcp")
+        create_app(setup.settings, connector=setup.connector),
+        base_url=PUBLIC_URL.removesuffix("/mcp"),
     ) as client:
         wrong_host = rpc(client, "tools/list", headers={"Host": "evil.example"})
         assert wrong_host.status_code in {400, 403, 421}
@@ -521,7 +494,8 @@ def test_dns_rebinding_and_origin_controls_guard_the_mcp_endpoint(setup):
 
 def test_http_request_budget_and_routing_header_mismatch_are_rejected(setup):
     with TestClient(
-        create_app(setup.settings, service=setup.service), base_url=PUBLIC_URL.removesuffix("/mcp")
+        create_app(setup.settings, connector=setup.connector),
+        base_url=PUBLIC_URL.removesuffix("/mcp"),
     ) as client:
         oversized = rpc(
             client,
@@ -564,8 +538,16 @@ def test_jwt_metadata_discovery_and_authenticated_call(setup, monkeypatch):
         key,
         algorithm="RS256",
     )
+    callers = []
+    original_collect = setup.connector.collect_resources
+
+    async def collect_as(caller, queries):
+        callers.append(caller)
+        return await original_collect(caller, queries)
+
+    monkeypatch.setattr(setup.connector, "collect_resources", collect_as)
     with TestClient(
-        create_app(settings, service=setup.service), base_url=PUBLIC_URL.removesuffix("/mcp")
+        create_app(settings, connector=setup.connector), base_url=PUBLIC_URL.removesuffix("/mcp")
     ) as client:
         metadata = client.get("/.well-known/oauth-protected-resource/mcp")
         assert metadata.status_code == 200
@@ -586,17 +568,16 @@ def test_jwt_metadata_discovery_and_authenticated_call(setup, monkeypatch):
         )
         assert response.status_code == 200, response.text
         result = response.json()["result"]["structuredContent"]
-        identifier = result["results"][0]["evidence_id"]
-        assert setup.service.store.get_evidence("jwt-agent", identifier)
-        with pytest.raises(ValueError):
-            setup.service.store.get_evidence("agent-a", identifier)
+        assert result["results"][0]["items"][0]["data"]["name"] == "vm-one"
+        assert callers == ["jwt-agent"]
+        assert "evidence_id" not in result["results"][0]
 
 
 async def test_stdio_build_and_direct_tools_do_not_require_http_auth_or_adc(setup):
     settings = setup.settings.model_copy(
         update={"auth_mode": "jwt", "allowed_subjects": [], "jwt_issuer": ""}
     )
-    server, service, verifier = build_server(settings, service=setup.service, http=False)
+    server, connector, verifier = build_server(settings, connector=setup.connector, http=False)
     try:
         assert verifier is None
         assert {tool.name for tool in await server.list_tools()} == TOOLS
@@ -606,17 +587,20 @@ async def test_stdio_build_and_direct_tools_do_not_require_http_auth_or_adc(setu
             "collect_resources",
             {"queries": [{"kind": "gcp.compute.instances", "project": "prod-a"}]},
         )
-        identifier = collected.structured_content["results"][0]["evidence_id"]
-        assert service.store.get_evidence("local-stdio", identifier)
+        result = collected.structured_content["results"][0]
+        assert result["items"][0]["data"]["name"] == "vm-one"
+        assert "evidence_id" not in result
+        assert not hasattr(connector, "store")
     finally:
-        await service.close()
+        await connector.close()
 
 
-def test_offline_cli_checks_and_private_token_hashing(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["sec-auditor", "checks"])
+def test_offline_cli_catalog_and_private_token_hashing(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["sec-auditor", "catalog"])
     main()
     definitions = json.loads(capsys.readouterr().out)
-    assert definitions and all("id" in item for item in definitions)
+    assert set(definitions) == {"gcp", "alicloud", "kubernetes"}
+    assert all("get" in item["operations"] for item in definitions["kubernetes"])
     token = "example-random-token-for-cli-test-only"
     monkeypatch.setattr(sys, "argv", ["sec-auditor", "hash-token"])
     monkeypatch.setattr(sys, "stdin", io.StringIO(token + "\n"))
@@ -624,3 +608,120 @@ def test_offline_cli_checks_and_private_token_hashing(monkeypatch, capsys):
     output = capsys.readouterr()
     assert output.out.strip() == hashlib.sha256(token.encode()).hexdigest()
     assert token not in output.out + output.err
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "list_security_checks",
+        "run_security_checks",
+        "get_evidence",
+        "start_assessment",
+        "get_assessment",
+        "list_assessment_results",
+        "cancel_assessment",
+    ],
+)
+def test_removed_auditor_tools_are_not_executable(setup, name):
+    with TestClient(
+        create_app(setup.settings, connector=setup.connector),
+        base_url=PUBLIC_URL.removesuffix("/mcp"),
+    ) as client:
+        response = rpc(client, "tools/call", {"name": name, "arguments": {}})
+        payload = response.json()
+        assert "error" in payload or payload["result"].get("isError") is True
+        assert setup.google.calls == []
+        assert setup.kubernetes.calls == []
+        assert not hasattr(setup.connector, "store")
+
+
+def test_capabilities_pagination_discovers_every_kind_and_binds_the_caller(setup):
+    expected = {item["kind"] for item in setup.connector.capabilities()["gcp_resources"]}
+    with TestClient(
+        create_app(setup.settings, connector=setup.connector),
+        base_url=PUBLIC_URL.removesuffix("/mcp"),
+    ) as client:
+        arguments = {"provider": "gcp", "page_size": 25}
+        seen = []
+        first_cursor = None
+        while True:
+            result = call(client, "capabilities", arguments)
+            assert "error" not in result
+            assert len(json.dumps(result).encode()) <= setup.settings.max_response_bytes
+            assert not result["alicloud_resources"] and not result["kubernetes_resources"]
+            assert result["discovery"]["matched_kinds"] == len(expected)
+            seen.extend(item["kind"] for item in result["gcp_resources"])
+            assert result["discovery"]["returned_kinds"] == len(result["gcp_resources"])
+            if not result["next_cursor"]:
+                assert result["discovery"]["complete"]
+                break
+            first_cursor = first_cursor or result["next_cursor"]
+            arguments["cursor"] = result["next_cursor"]
+        assert set(seen) == expected
+        assert len(seen) == len(expected)
+        denied = call(
+            client, "capabilities", {**arguments, "cursor": first_cursor}, actor="agent-b"
+        )
+        assert denied["error"]["code"] == "INVALID_ARGUMENT"
+        assert setup.google.calls == []
+
+
+def test_capabilities_adapts_to_small_response_budget_without_storing_results(setup):
+    setup.settings.max_response_bytes = 10_000
+    with TestClient(
+        create_app(setup.settings, connector=setup.connector),
+        base_url=PUBLIC_URL.removesuffix("/mcp"),
+    ) as client:
+        result = call(
+            client,
+            "capabilities",
+            {"provider": "gcp", "kind_prefix": "gcp.compute", "page_size": 200},
+        )
+        assert "error" not in result
+        assert result["gcp_resources"]
+        assert result["next_cursor"]
+        assert result["discovery"]["returned_kinds"] < result["discovery"]["matched_kinds"]
+        assert len(json.dumps(result, separators=(",", ":")).encode()) <= 10_000
+        assert not hasattr(setup.connector, "store")
+
+
+def test_named_kubernetes_read_and_field_selection_still_redact_values(setup):
+    with TestClient(
+        create_app(setup.settings, connector=setup.connector),
+        base_url=PUBLIC_URL.removesuffix("/mcp"),
+    ) as client:
+        result = call(
+            client,
+            "inspect_kubernetes",
+            {
+                "queries": [
+                    {
+                        "cluster": CLUSTER,
+                        "kind": "Pod",
+                        "operation": "get",
+                        "namespace": "apps",
+                        "resource_id": "web",
+                        "fields": [
+                            "data.spec.containers.0.env.0.value",
+                            "data.spec.containers.0.image",
+                        ],
+                    }
+                ]
+            },
+        )["results"][0]
+        assert not result["errors"]
+        assert result["next_cursor"] is None
+        assert result["items"][0]["selected"]["data.spec.containers.0.env.0.value"] == "[REDACTED]"
+        assert result["items"][0]["selected"]["data.spec.containers.0.image"] == "example/web:1"
+        assert "evidence_id" not in result
+
+
+def test_all_mcp_tools_advertise_read_only_behavior(setup):
+    with TestClient(
+        create_app(setup.settings, connector=setup.connector),
+        base_url=PUBLIC_URL.removesuffix("/mcp"),
+    ) as client:
+        tools = rpc(client, "tools/list").json()["result"]["tools"]
+        assert len(tools) == 6
+        assert all(item["annotations"]["readOnlyHint"] for item in tools)
+        assert all(not item["annotations"]["destructiveHint"] for item in tools)

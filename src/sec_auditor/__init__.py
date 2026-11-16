@@ -1,3 +1,3 @@
-"""Sec-Auditor: restricted cloud evidence collection over MCP."""
+"""Restricted, stateless cloud reads for Python applications and MCP clients."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

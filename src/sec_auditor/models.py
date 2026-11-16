@@ -1,4 +1,4 @@
-"""Provider-neutral evidence and check contracts."""
+"""Provider-neutral read-result contracts."""
 
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -40,24 +40,3 @@ class CollectionResult(StrictModel):
     warnings: list[str] = Field(default_factory=list)
     errors: list[CollectionError] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class CheckDefinition(StrictModel):
-    id: str
-    title: str
-    description: str
-    resource_kind: str
-    severity: Literal["info", "low", "medium", "high", "critical"] = "medium"
-    remediation: str = ""
-
-
-class CheckResult(StrictModel):
-    check_id: str
-    resource: str
-    status: Literal["pass", "fail", "unknown", "not_applicable"]
-    severity: Literal["info", "low", "medium", "high", "critical"] = "medium"
-    title: str
-    summary: str
-    evidence_paths: list[str] = Field(default_factory=list)
-    details: dict[str, Any] = Field(default_factory=dict)
-    remediation: str = ""

@@ -51,7 +51,8 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     allowed_hosts: list[str] = Field(default_factory=list)
     allowed_origins: list[str] = Field(default_factory=list)
-    state_path: Path = Path(".state/sec-auditor.sqlite3")
+    cursor_signing_key: SecretStr | None = None
+    cursor_ttl_seconds: int = Field(default=3600, ge=60, le=604800)
     max_concurrency: int = Field(default=12, ge=1, le=128)
     per_api_concurrency: int = Field(default=4, ge=1, le=32)
     requests_per_second: float = Field(default=5, gt=0, le=100)
@@ -62,14 +63,17 @@ class Settings(BaseSettings):
     max_batch_size: int = Field(default=20, ge=1, le=100)
     max_page_size: int = Field(default=200, ge=1, le=1000)
     max_log_hours: int = Field(default=24, ge=1, le=168)
-    max_scan_pages: int = Field(default=20, ge=1, le=1000)
-    max_scan_resources: int = Field(default=5000, ge=1, le=100_000)
-    max_scan_seconds: int = Field(default=600, ge=10, le=3600)
-    max_pending_jobs: int = Field(default=20, ge=1, le=100)
-    evidence_ttl_seconds: int = Field(default=3600, ge=60, le=604800)
-    retention_seconds: int = Field(default=86400, ge=3600, le=604800)
     scope_cache_seconds: int = Field(default=60, ge=0, le=300)
     kubernetes_endpoint: Literal["auto", "dns", "private", "public"] = "auto"
+
+    @field_validator("cursor_signing_key")
+    @classmethod
+    def cursor_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not re.fullmatch(r"[a-fA-F0-9]{64}", value.get_secret_value()):
+            raise ValueError(
+                "cursor_signing_key must be 64 hexadecimal characters (32 random bytes)"
+            )
+        return value
 
     @field_validator("allowed_organizations")
     @classmethod

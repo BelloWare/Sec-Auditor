@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import httpx
 
@@ -233,8 +234,8 @@ def _safe_item_name(value: Any) -> str:
         or not value
         or value in {".", ".."}
         or len(value) > 512
-        or any(char in value for char in "/\\?#")
-        or any(ord(char) < 32 for char in value)
+        or any(char in value for char in "/\\%?#")
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
     ):
         raise KubernetesReadError("INVALID_RESPONSE", "Kubernetes returned an invalid object name")
     return value
@@ -277,9 +278,27 @@ class KubernetesProvider:
             {
                 "kind": f"k8s.{item.kind}",
                 "namespaced": item.namespaced,
-                "operations": ["list"],
+                "operations": ["list", "get"],
                 "api": item.api,
                 "pagination": True,
+                "queries": {
+                    "list": {
+                        "method": "GET",
+                        "requires_resource_id": False,
+                        "requires_namespace": False,
+                        "namespace_allowed": item.namespaced,
+                        "pagination": "native",
+                        "max_page_size": 500,
+                    },
+                    "get": {
+                        "method": "GET",
+                        "requires_resource_id": True,
+                        "resource_id_format": "One Kubernetes object name; paths and subresources are not accepted.",
+                        "requires_namespace": item.namespaced,
+                        "namespace_allowed": item.namespaced,
+                        "pagination": "singleton",
+                    },
+                },
             }
             for item in _KINDS
         ]
@@ -457,13 +476,52 @@ class KubernetesProvider:
         page_size: int = 100,
         page_token: str | None = None,
     ) -> CollectionResult:
+        return await self._read_objects(
+            cluster,
+            kind,
+            namespace=namespace,
+            page_size=page_size,
+            page_token=page_token,
+        )
+
+    async def get_object(
+        self,
+        cluster: str,
+        kind: str,
+        resource_id: str,
+        *,
+        namespace: str | None = None,
+    ) -> CollectionResult:
+        """Read one allowlisted object by name, never an arbitrary subresource."""
+        try:
+            _safe_item_name(resource_id)
+        except KubernetesReadError as exc:
+            raise ValueError("resource_id must be one Kubernetes object name") from exc
+        return await self._read_objects(
+            cluster, kind, namespace=namespace, resource_id=resource_id, page_size=1
+        )
+
+    async def _read_objects(
+        self,
+        cluster: str,
+        kind: str,
+        *,
+        namespace: str | None = None,
+        resource_id: str | None = None,
+        page_size: int = 100,
+        page_token: str | None = None,
+    ) -> CollectionResult:
         project, account_id, location, platform = self._cluster_identity(cluster)
         normalized = normalize_kind(kind)
         descriptor = KUBERNETES_KINDS[normalized]
-        if namespace is not None and not _NAMESPACE.fullmatch(namespace):
+        if namespace is not None and (
+            not isinstance(namespace, str) or not _NAMESPACE.fullmatch(namespace)
+        ):
             raise ValueError("namespace must be a Kubernetes DNS label")
         if namespace is not None and not descriptor.namespaced:
             raise ValueError("A namespace cannot be supplied for a cluster-scoped kind")
+        if resource_id is not None and descriptor.namespaced and namespace is None:
+            raise ValueError("A namespace is required for a namespaced object get")
         if (
             isinstance(page_size, bool)
             or not isinstance(page_size, int)
@@ -481,9 +539,13 @@ class KubernetesProvider:
         if namespace is not None:
             path += f"/namespaces/{namespace}"
         path += f"/{descriptor.plural}"
-        params: dict[str, Any] = {"limit": page_size}
-        if page_token:
-            params["continue"] = page_token
+        params: dict[str, Any] = {}
+        if resource_id is not None:
+            path += "/" + quote(resource_id, safe="")
+        else:
+            params["limit"] = page_size
+            if page_token:
+                params["continue"] = page_token
         target = f"{cluster}{path}"
 
         try:
@@ -493,11 +555,14 @@ class KubernetesProvider:
                 self._connection(cluster) as connection,
             ):
                 response = await self._get_json(connection, path, params)
-                if response.get("kind") not in {None, "List", f"{normalized}List"}:
-                    raise KubernetesReadError(
-                        "INVALID_RESPONSE", "Unexpected Kubernetes collection type"
-                    )
-                items, metadata = response.get("items"), response.get("metadata", {})
+                if resource_id is not None:
+                    items, metadata = [response], response.get("metadata", {})
+                else:
+                    if response.get("kind") not in {None, "List", f"{normalized}List"}:
+                        raise KubernetesReadError(
+                            "INVALID_RESPONSE", "Unexpected Kubernetes collection type"
+                        )
+                    items, metadata = response.get("items"), response.get("metadata", {})
                 if not isinstance(items, list) or not isinstance(metadata, dict):
                     raise KubernetesReadError(
                         "INVALID_RESPONSE", "Kubernetes collection fields are invalid"
@@ -518,6 +583,10 @@ class KubernetesProvider:
                             "INVALID_RESPONSE", "Kubernetes object metadata is missing"
                         )
                     name = _safe_item_name(object_metadata.get("name"))
+                    if resource_id is not None and name != resource_id:
+                        raise KubernetesReadError(
+                            "INVALID_RESPONSE", "Object does not match the requested name"
+                        )
                     object_namespace = object_metadata.get("namespace")
                     if descriptor.namespaced:
                         if not isinstance(object_namespace, str) or not _NAMESPACE.fullmatch(
@@ -548,7 +617,7 @@ class KubernetesProvider:
                             source=f"{platform}://{cluster}{path}",
                         )
                     )
-                continuation = metadata.get("continue") or None
+                continuation = None if resource_id is not None else metadata.get("continue") or None
                 if continuation is not None and (
                     not isinstance(continuation, str)
                     or len(continuation.encode()) > _MAX_CONTINUE_BYTES
@@ -562,6 +631,8 @@ class KubernetesProvider:
                     metadata={
                         "cluster": cluster,
                         "kind": f"k8s.{normalized}",
+                        "operation": "get" if resource_id is not None else "list",
+                        "resource_id": resource_id,
                         "namespace": namespace,
                         "resource_version": metadata.get("resourceVersion"),
                         "remaining_item_count": metadata.get("remainingItemCount"),

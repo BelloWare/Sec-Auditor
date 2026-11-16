@@ -14,8 +14,8 @@ There are two independent identities:
    `roles/iam.securityAuditor` on the organization.
 
 The supplied manifests configure one replica, a private ClusterIP Service,
-restricted pod settings, and a persistent volume for SQLite assessment and
-evidence state. They contain placeholders and must be configured before use.
+restricted pod settings and no persistent state volume. The application retains
+no collected resources or jobs. Manifests contain placeholders and must be configured before use.
 They do not create a public ingress or grant Kubernetes cluster-admin.
 
 ## 1. Configure Workload Identity
@@ -93,8 +93,8 @@ token to Google APIs; Google requests use the runtime GSA's ADC credentials.
 All approved callers in one deployment share its configured cloud scope. They
 do not receive automatic per-user cloud permission delegation. Deploy separate
 instances with separate scope policy/identities when distinct reader groups
-need different resource access. Assessment and evidence identifiers remain
-bound to their initiating caller.
+need different resource access. Continuation cursors remain bound to the
+authenticated caller and query.
 
 For a machine client with preconfigured headers, static mode is available:
 
@@ -124,10 +124,25 @@ project-scoped Service Usage Consumer role is one option. The service does not
 enable APIs or expand IAM automatically. Disabled APIs, quota errors, missing
 permissions, and inaccessible resources appear as incomplete coverage.
 
-Tune concurrency, requests per second, page limits, time windows, assessment
-budgets, and retention in the ConfigMap. Limits currently apply within one
-process. Do not raise the replica count expecting distributed quota coordination.
-Some APIs have organization-wide quotas shared with other tools.
+Tune concurrency, requests per second, response/page limits and log time windows
+in the ConfigMap. Budgets apply within one process; additional replicas increase
+total API pressure. Some APIs have organization-wide quotas shared with other tools.
+
+Continuation signing needs no database. Unset `SEC_AUDITOR_CURSOR_SIGNING_KEY`
+creates a process-local key, so restart or another replica invalidates existing
+cursors. For continuity, inject the same 64-hex secret key into all replicas with
+the same scope/authentication configuration. The manifest optionally reads Secret
+`sec-auditor-cursor-key`, key `signing-key`. Provision it from your secret manager,
+or from a protected file containing the key:
+
+```bash
+kubectl create secret generic sec-auditor-cursor-key -n sec-auditor \
+  --from-file=signing-key=/secure/path/cursor-signing-key
+```
+
+Create the namespace first. The file must contain exactly 64 hex characters with
+no trailing newline. Do not store the key in the ConfigMap or repository. Rotation
+invalidates earlier cursors. `SEC_AUDITOR_CURSOR_TTL_SECONDS` defaults to 3600.
 
 ## 4. Network access
 
@@ -165,8 +180,8 @@ Build the image using your normal trusted CI/build service and deploy its
 immutable digest:
 
 ```bash
-docker build -t REGION-docker.pkg.dev/IMAGE_PROJECT/REPOSITORY/sec-auditor:0.2.0 .
-docker push REGION-docker.pkg.dev/IMAGE_PROJECT/REPOSITORY/sec-auditor:0.2.0
+docker build -t REGION-docker.pkg.dev/IMAGE_PROJECT/REPOSITORY/sec-auditor:0.3.0 .
+docker push REGION-docker.pkg.dev/IMAGE_PROJECT/REPOSITORY/sec-auditor:0.3.0
 ```
 
 Replace the image placeholder with the resulting `@sha256:...` reference.
@@ -174,19 +189,23 @@ The build installs the pinned production dependencies from `requirements.lock`
 with hash verification, then installs this package without resolving additional
 runtime dependencies. Retain the resulting image digest/SBOM and pin the Python
 base image digest in your release process. Replace all organization, identity, issuer, subject, and host
-placeholders. Review the storage class and resource limits, then apply:
+placeholders. Review resource limits and network access, then apply:
 
 ```bash
 kubectl apply -f deploy/kubernetes/
 kubectl rollout status deployment/sec-auditor -n sec-auditor
-kubectl get pods,svc,pvc -n sec-auditor
+kubectl get pods,svc -n sec-auditor
 ```
 
-The deployment uses a single replica with `Recreate` and a ReadWriteOnce PVC.
-State belongs on the persistent `/data` volume, not `/tmp`. Back up the volume
-according to your operational policy. SQLite is intentionally a single-service
-starting point; scaling this deployment requires a shared job/evidence store
-and a shared quota scheduler before adding replicas.
+The example starts with one replica and permits normal rolling updates. There
+is no state mount, database or PVC. `/tmp` is a bounded ephemeral volume for
+library/runtime temporary files. A shared cursor signing key is needed when
+continuations must survive process replacement or load balancing. No shared
+resource/evidence store is required. Respect process-local rate limits when scaling.
+
+When upgrading an old deployment, applying these manifests does not automatically
+delete the previous PVC. Handle any historical auditor data under your retention
+policy before explicitly deleting that unused volume.
 
 `/healthz` and `/readyz` are process/readiness endpoints for probes. A healthy
 pod does not establish that every target API or cluster can be accessed. Use
@@ -195,11 +214,11 @@ actual coverage.
 
 ## 6. Validate the intended boundary
 
-Before enabling broad agent assessments, run representative tool requests for
+Before enabling broad agent queries, run representative tool requests for
 inventory, VM configuration, bucket configuration, project IAM, one target
 cluster's Pods, and a short audit/flow-log window using the deployed identity.
 Verify that pagination and any denials are reported. Do not infer complete
-organization coverage from an empty findings array.
+organization coverage from an empty response.
 
 The service never adds RBAC bindings, changes workloads, downloads bucket
 objects, retrieves Kubernetes Secrets, executes guest commands, pulls Pub/Sub

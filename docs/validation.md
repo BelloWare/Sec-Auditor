@@ -1,48 +1,63 @@
-# Validation of version 0.2.0
+# Validation of version 0.3
 
-This implementation was validated in the local Python 3.12 environment. No live
-GCP organization, Alibaba account or Kubernetes cluster was accessed or modified.
+The connector is verified with offline tests and mocked upstream responses.
+No live GCP organization, Alibaba account or Kubernetes cluster is accessed or
+modified by the test suite. Live identity, permissions, private routing and data
+availability require deployment acceptance in your environment.
 
-| Gate | Result |
+The version 0.3 validation run on 2026-11-12 passed **753 tests** on Python 3.12.
+The 66 warnings came from deprecated datetime usage in upstream Alibaba signing
+SDKs. Ruff lint and formatting, dependency compatibility, and source whitespace
+checks also passed. Tests include real MCP HTTP/stdio protocol exchanges with
+mocked cloud APIs and a fresh-process import test that blocks MCP, its HTTP/auth
+stack and SQLite while using the core connector.
+
+## Automated verification gates
+
+Run the full MCP test environment and package build:
+
+```bash
+python -m pip install -e '.[mcp,dev]'
+python -m pytest -q
+python -m ruff check .
+python -m ruff format --check .
+python -m build
+```
+
+The relevant contracts are:
+
+| Area | Verified behavior |
 | --- | --- |
-| Offline pytest suite | 822 tests passed |
-| Ruff lint | Passed |
-| Ruff formatting | Passed |
-| Dependency consistency | Installed packages compatible; production dependencies installed from hashed lockfile |
-| Python packaging | Wheel and source distribution built successfully |
-| Package contents | Provider modules present; runtime databases, credentials and environment files excluded |
-| Documented requests | 16 JSON query examples validated against schemas/capability requirements |
-| ACK manifests | Nine YAML documents parse; settings, namespace, bindings, selectors, mounts and probes align |
-| ACK RBAC | Exactly the 29 allowlisted kinds; get/list only, no Secrets, ConfigMaps or subresources |
-| Alibaba RAM policy | Matches generated catalog actions; unsafe data/key/SSL actions excluded |
-| SLS policy | Separate exact-logstore ARN example |
+| Core embedding | Direct connector reads without assessments, workers, SQLite or stored observations. |
+| Packaging | The base library can be imported without MCP; the MCP extra supplies server dependencies. |
+| Cloud identity/scope | GCP identity and ancestry, nested ownership, Alibaba account proof and credential rotation, and bucket ownership. |
+| Pagination | Native token/marker/number handling, per-query cursors, caller/query binding, tamper rejection and expiration. |
+| Output budgets | Whole-page success or explicit oversized-response failure; field selection after mandatory security projection. |
+| Provider routing | Mixed-provider bulk reads preserve per-target results and failures. |
+| Kubernetes | The 29-kind allowlist, exact gets, list pagination, TLS/endpoint controls, projected token rotation and no forbidden subresources. |
+| Content controls | Resource/log projection, encoded policy handling, malformed payloads and decompression limits. |
+| MCP | Six advertised read tools, real stdio handshake and authenticated HTTP dispatch. |
+| Deployment files | No state PVC or state mount; explicit identity projections, narrow RBAC, probes and hardened pod settings. |
 
-Tests cover native-shaped pagination and malformed responses, project ancestry,
-Alibaba credential/account proof and rotation, bucket ownership, nested parents,
-provider/actor/query-bound cursors, mixed-provider partial failures, MCP stdio and
-HTTP, typed log projection, decompression bounds, token rotation, assessment
-budgets/cancellation/persistence, and deterministic check semantics. Official
-Alibaba SDK signers are exercised with mocked HTTP, not replaced with hand-written
-cryptography. A repeated-projection regression preserves redaction provenance.
+Official Alibaba SDK signing is exercised with mocked HTTP rather than replaced
+with a handwritten signer. The compiled catalogs preserve 91 GCP kinds/160 cloud
+operations, 65 Alibaba kinds/75 cloud operations, and 29 Kubernetes kinds with
+list/get. CAI has 45 approved asset types. Counts describe tested implementation
+contracts, not a security certification or universal product coverage.
 
-The catalog exposes 91 GCP kinds/160 list-get variants, 65 Alibaba kinds/75 query
-variants and 29 native Kubernetes kinds. Existing CAI inventory has 45 approved
-asset types. There are 211 rule registrations, including 21 Alibaba rules and
-136 Kubernetes registrations of shared workload and policy checks. A kind or
-rule count is not a compliance-coverage score.
+## Remaining live acceptance
 
-## Remaining deployment validation
+Build the container in your trusted pipeline, replace all manifest placeholders
+and test representative reads under the deployment's identity. Check API
+enablement, exact permissions, service home regions, quotas, network routes,
+cluster RBAC, log routing/indexing/retention and existing scanner freshness.
+A healthy process probe does not prove access to every cloud target.
 
-Docker image building and GKE/ACK deployment were not performed in this workspace.
-Use your trusted image build pipeline, replace all deployment placeholders and
-validate representative read calls under the deployed identity. Check enabled
-APIs, exact permissions, service home regions, quotas, private-cluster routing,
-log collection/indexing and existing scanner availability. Denials and missing
-reports remain coverage gaps; the code does not grant itself permissions, enable
-services, generate traffic, run vulnerability scans or modify cloud resources.
+Exercise cursor continuation and projected output across a replica/restart when
+using a shared cursor signing key. An unset signing key intentionally invalidates
+cursors when the process changes. Request/rate limits are per process, so adding
+replicas changes total API pressure.
 
-One process has one default Alibaba credential binding and one SQLite job worker.
-Use separately scoped deployments for independent account credentials; distributed
-queue/storage/quota coordination is not implemented. The scope allowlists apply
-to all authorized MCP callers; caller ownership separates their saved jobs and
-evidence, not their available cloud resource scopes.
+The connector does not grant permissions, enable APIs, start scanners or alter
+cloud resources. All approved callers share configured resource scopes; actor
+binding isolates continuations, not independent per-user cloud permissions.

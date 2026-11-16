@@ -5,8 +5,6 @@ metadata:
   namespace: sec-auditor
 spec:
   replicas: 1
-  strategy:
-    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: sec-auditor
@@ -35,6 +33,14 @@ spec:
           image: REGION-docker.pkg.dev/IMAGE_PROJECT/REPOSITORY/sec-auditor@sha256:REPLACE_WITH_IMAGE_DIGEST
           imagePullPolicy: IfNotPresent
           args: [serve, --transport, http, --host, 0.0.0.0, --port, '8000']
+          # Optional shared signing key; absent means process-local cursors.
+          env:
+            - name: SEC_AUDITOR_CURSOR_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sec-auditor-cursor-key
+                  key: signing-key
+                  optional: true
           envFrom:
             - configMapRef:
                 name: sec-auditor-config
@@ -79,14 +85,9 @@ spec:
                   value: sec-auditor.sec-auditor.svc.cluster.local:8000
             periodSeconds: 20
           volumeMounts:
-            - name: state
-              mountPath: /data
             - name: tmp
               mountPath: /tmp
       volumes:
-        - name: state
-          persistentVolumeClaim:
-            claimName: sec-auditor-state
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi

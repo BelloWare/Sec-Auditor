@@ -7,7 +7,8 @@ allowed in `SEC_AUDITOR_ALLOWED_ALICLOUD_ACCOUNTS`.
 
 The HTTP MCP caller's JWT or static token authenticates the agent to this service.
 It is never forwarded to Alibaba APIs. Cloud credentials are obtained only by the
-server and are never included in tool results, evidence or job records.
+server and are never included in tool results. The connector stores no collected
+records or job state.
 
 ## Keyless credentials
 
@@ -83,6 +84,24 @@ Reference: [STS GetCallerIdentity response and authorization](https://www.alibab
 
 ## RAM permissions
 
+For this connector, create a dedicated RAM role (for example, `sec-auditor`) and
+attach a custom policy named `SecAuditorReadOnly` using
+[`read-policy.json`](../deploy/alicloud/read-policy.json). That is a suggested
+customer-managed policy name, not an Alibaba managed policy. The file enumerates
+only the compiled resource-read actions. It uses `Resource: "*"` for account-wide
+discovery; narrow resource scopes where the relevant API supports them. Add the
+separate [SLS example](../deploy/alicloud/sls-read-policy.example.json) only for
+approved security logstores, and give native ACK reads their separate Kubernetes
+RBAC binding. `sec-auditor ram-policy` regenerates the resource-action policy.
+
+A broad managed read-only policy is not a metadata-only policy. For example,
+[AliyunOSSReadOnlyAccess](https://www.alibabacloud.com/help/en/ram/developer-reference/aliyunossreadonlyaccess)
+grants `oss:Get*` and `oss:List*`, which includes object-content reads.
+[AliyunYundunSASReadOnlyAccess](https://www.alibabacloud.com/help/en/ram/developer-reference/aliyunyundunsasreadonlyaccess)
+is a Security Center policy, not an infrastructure-wide policy; its current
+published actions also include `secllm:ToolInvoke`. Use exact reviewed actions
+for a fetch-only connector instead of inferring behavior from a policy name.
+
 Grant the exact RAM read actions advertised by `capabilities` for the resource
 families you enable. Review the generated policy example in
 `deploy/alicloud/read-policy.json` alongside your service-specific resource
@@ -119,7 +138,7 @@ logstore tuple against this registry. Reads use the current GetLogsV2 fixed
 `POST /logstores/{logstore}/logs` route with a JSON request, a fixed `*` search,
 a bounded time window, and at most 100 records per upstream page. SQL and arbitrary search
 expressions are rejected. The service projects log entries to the selected
-security telemetry fields before returning or storing them. The transport requests
+security telemetry fields before returning them. The transport requests
 gzip compression and separately caps compressed and decompressed response bytes.
 
 SLS can return an incomplete result while its search is still processing. Those

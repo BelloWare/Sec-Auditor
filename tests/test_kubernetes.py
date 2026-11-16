@@ -504,3 +504,117 @@ async def test_collection_snapshot_expiry_is_explicit():
         assert route.call_count == 1
     finally:
         await provider.aclose()
+
+
+@pytest.mark.parametrize(
+    ("kind", "name", "namespace", "path"),
+    [
+        ("Pod", "web", "apps", "/api/v1/namespaces/apps/pods/web"),
+        ("Deployment", "web", "apps", "/apis/apps/v1/namespaces/apps/deployments/web"),
+        ("Node", "worker.example.com", None, "/api/v1/nodes/worker.example.com"),
+        (
+            "ClusterRole",
+            "system:node",
+            None,
+            "/apis/rbac.authorization.k8s.io/v1/clusterroles/system%3Anode",
+        ),
+    ],
+)
+@respx.mock
+async def test_exact_get_uses_one_authenticated_object_route(kind, name, namespace, path):
+    google = GoogleStub()
+    provider = KubernetesProvider(google)
+    metadata = {"name": name, "resourceVersion": "789"}
+    if namespace is not None:
+        metadata["namespace"] = namespace
+    obj = {"kind": kind, "metadata": metadata}
+    route = respx.get(f"https://{DNS}{path}").respond(200, json=obj)
+    try:
+        result = await provider.get_object(CLUSTER, kind, name, namespace=namespace)
+        assert not result.errors
+        assert len(result.items) == 1
+        assert result.items[0].data == obj
+        assert result.items[0].kind == f"k8s.{kind}"
+        assert result.next_page_token is None
+        assert result.metadata["operation"] == "get"
+        assert result.metadata["resource_id"] == name
+        assert result.metadata["resource_version"] == "789"
+        assert result.metadata["collection_complete"]
+        request = route.calls.last.request
+        assert request.method == "GET"
+        assert request.url.raw_path == path.encode()
+        assert not request.url.params
+        assert request.headers["Authorization"] == "Bearer initial-token"
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.parametrize(
+    ("kind", "name", "namespace"),
+    [
+        ("Pod", "web", None),
+        ("Node", "worker", "apps"),
+        ("Secret", "credential", "apps"),
+        ("ConfigMap", "config", "apps"),
+        ("Pod/exec", "web", "apps"),
+        ("Pod", "web/log", "apps"),
+        ("Pod", "web%2Flog", "apps"),
+        ("Pod", "../secrets/credential", "apps"),
+        ("Pod", "..", "apps"),
+        ("Pod", "web?watch=true", "apps"),
+        ("Pod", "web#log", "apps"),
+        ("Pod", "web\nAuthorization", "apps"),
+        ("Pod", "", "apps"),
+        ("Pod", None, "apps"),
+        ("Pod", "web", "apps/../other"),
+    ],
+)
+async def test_exact_get_rejects_invalid_or_forbidden_targets_before_credentials(
+    kind, name, namespace
+):
+    google = GoogleStub()
+    provider = KubernetesProvider(google)
+    try:
+        with pytest.raises(ValueError):
+            await provider.get_object(CLUSTER, kind, name, namespace=namespace)
+        assert google.gets == []
+        assert google.refreshes == []
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        pod(name="other"),
+        pod(namespace="other"),
+        {"kind": "Secret", "metadata": {"name": "web", "namespace": "default"}},
+        {"kind": "Pod", "metadata": {"namespace": "default"}},
+        {"kind": "Pod"},
+        page([pod()]),
+    ],
+)
+@respx.mock
+async def test_exact_get_rejects_wrong_or_malformed_object(obj):
+    provider = KubernetesProvider(GoogleStub())
+    respx.get(f"https://{DNS}/api/v1/namespaces/default/pods/web").respond(200, json=obj)
+    try:
+        result = await provider.get_object(CLUSTER, "Pod", "web", namespace="default")
+        assert result.items == []
+        assert result.errors[0].code == "INVALID_RESPONSE"
+        assert not result.metadata["collection_complete"]
+    finally:
+        await provider.aclose()
+
+
+def test_kubernetes_capabilities_describe_exact_get_and_namespace_requirements():
+    provider = KubernetesProvider(GoogleStub())
+    capabilities = {item["kind"]: item for item in provider.capabilities()}
+    assert "k8s.Secret" not in capabilities
+    assert "k8s.ConfigMap" not in capabilities
+    for capability in capabilities.values():
+        assert capability["operations"] == ["list", "get"]
+        assert capability["queries"]["get"]["requires_resource_id"]
+        assert capability["queries"]["get"]["requires_namespace"] == capability["namespaced"]
+        assert capability["queries"]["get"]["pagination"] == "singleton"
+        assert capability["queries"]["list"]["namespace_allowed"] == capability["namespaced"]

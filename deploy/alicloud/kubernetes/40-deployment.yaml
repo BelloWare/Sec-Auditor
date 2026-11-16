@@ -6,8 +6,6 @@ metadata:
   namespace: sec-auditor
 spec:
   replicas: 1
-  strategy:
-    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: sec-auditor
@@ -84,8 +82,6 @@ spec:
               value: sec-auditor.sec-auditor.svc.cluster.local:8000
           periodSeconds: 20
         volumeMounts:
-        - name: state
-          mountPath: /data
         - name: tmp
           mountPath: /tmp
         - name: rrsa-token
@@ -95,6 +91,13 @@ spec:
           mountPath: /var/run/sec-auditor/kubernetes
           readOnly: true
         env:
+        # Optional shared signing key; absent means process-local cursors.
+        - name: SEC_AUDITOR_CURSOR_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: sec-auditor-cursor-key
+              key: signing-key
+              optional: true
         - name: ALIBABA_CLOUD_ROLE_ARN
           value: acs:ram::1234567890123456:role/sec-auditor
         - name: ALIBABA_CLOUD_OIDC_PROVIDER_ARN
@@ -104,9 +107,6 @@ spec:
         - name: ALIBABA_CLOUD_ECS_METADATA_DISABLED
           value: 'true'
       volumes:
-      - name: state
-        persistentVolumeClaim:
-          claimName: sec-auditor-state
       - name: tmp
         emptyDir:
           sizeLimit: 64Mi

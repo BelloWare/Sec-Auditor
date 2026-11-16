@@ -87,8 +87,8 @@ def test_environment_files_are_not_implicitly_loaded(tmp_path, monkeypatch):
         ("request_timeout", 121),
         ("max_batch_size", 101),
         ("max_page_size", 1001),
-        ("max_scan_seconds", 0),
-        ("max_scan_resources", 100001),
+        ("cursor_ttl_seconds", 0),
+        ("cursor_ttl_seconds", 604801),
         ("max_response_bytes", 1),
         ("max_log_hours", 169),
         ("request_retries", 6),
@@ -129,3 +129,31 @@ def test_duplicate_static_digests_cannot_ambiguously_name_two_callers():
 def test_only_explicit_asymmetric_jwt_algorithms_are_accepted(algorithm):
     with pytest.raises(ValidationError):
         Settings(allowed_projects=["prod-a"], jwt_algorithms=[algorithm])
+
+
+@pytest.mark.parametrize("value", ["short", "a" * 63, "a" * 65, "g" * 64, " "])
+def test_cursor_key_requires_exactly_32_hex_encoded_bytes(value):
+    with pytest.raises(ValidationError, match="cursor_signing_key"):
+        Settings(allowed_projects=["prod-a"], cursor_signing_key=value)
+
+
+def test_cursor_key_environment_is_optional_and_hidden_from_configuration_dumps(monkeypatch):
+    assert Settings(allowed_projects=["prod-a"]).cursor_signing_key is None
+    monkeypatch.setenv("SEC_AUDITOR_ALLOWED_PROJECTS", '["prod-a"]')
+    monkeypatch.setenv("SEC_AUDITOR_CURSOR_SIGNING_KEY", "a" * 64)
+    settings = Settings()
+    assert settings.cursor_signing_key.get_secret_value() == "a" * 64
+    assert "a" * 64 not in repr(settings)
+    assert "a" * 64 not in settings.model_dump_json()
+
+
+def test_connector_settings_have_no_persistence_or_assessment_options():
+    assert not {
+        "state_path",
+        "evidence_ttl_seconds",
+        "retention_seconds",
+        "max_pending_jobs",
+        "max_scan_pages",
+        "max_scan_resources",
+        "max_scan_seconds",
+    }.intersection(Settings.model_fields)

@@ -11,10 +11,10 @@ from mcp.client.stdio import stdio_client
 async def test_packaged_stdio_handshake_and_tool_call(tmp_path):
     parameters = StdioServerParameters(
         command=sys.executable,
+        cwd=str(tmp_path),
         args=["-m", "sec_auditor", "serve", "--transport", "stdio"],
         env={
             "SEC_AUDITOR_ALLOWED_PROJECTS": '["example-project"]',
-            "SEC_AUDITOR_STATE_PATH": str(tmp_path / "stdio.sqlite3"),
             "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
         },
     )
@@ -25,7 +25,8 @@ async def test_packaged_stdio_handshake_and_tool_call(tmp_path):
     ):
         await session.initialize()
         tools = await session.list_tools()
-        assert len(tools.tools) == 13
+        assert len(tools.tools) == 6
         result = await session.call_tool("capabilities", {})
         assert not result.is_error
         assert result.structured_content["providers"] == ["gcp"]
+    assert not list(tmp_path.iterdir())

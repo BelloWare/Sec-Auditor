@@ -68,7 +68,7 @@ class CallerTokenVerifier:
         if not token or len(token) > 16_384:
             return None
         if self.settings.auth_mode == "static":
-            # Tokens themselves never live in configuration, logs, SQLite, or MCP responses.
+            # Tokens themselves never live in configuration, logs, or MCP responses.
             digest = hashlib.sha256(token.encode()).hexdigest()
             subject: str | None = None
             for candidate, configured in self.settings.static_tokens.items():

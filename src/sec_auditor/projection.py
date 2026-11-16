@@ -1,4 +1,4 @@
-"""Minimize content before evidence leaves the service or enters its state store.
+"""Minimize sensitive content before records leave the stateless connector.
 
 Field exclusions are deterministic; they cannot recognize every secret someone
 places in a legitimate resource name, label, or other configuration string.

@@ -15,7 +15,7 @@ from sec_auditor.config import Settings
 from sec_auditor.models import ResourceRecord
 from sec_auditor.projection import REDACTED, project_record
 from sec_auditor.providers.alicloud_catalog import OPERATIONS, RESOURCE_SPECS
-from sec_auditor.requests import AssessmentRequest, LogQuery, ResourceQuery
+from sec_auditor.requests import LogQuery, ResourceQuery
 
 CANARY = "OPAQUE_VALUE_MUST_NOT_LEAVE_SECURITY_BOUNDARY"
 ACCOUNT = "1234567890123456"
@@ -312,15 +312,3 @@ def test_scope_configuration_rejects_wrong_account_or_region_for_log_destination
                     }
                 },
             )
-
-
-def test_assessment_explicit_queries_cannot_start_from_caller_cursor():
-    query = ResourceQuery(
-        provider="alicloud",
-        kind="alicloud.ecs.instances",
-        account_id=ACCOUNT,
-        location="cn-hangzhou",
-        cursor="opaque",
-    )
-    with pytest.raises(ValidationError):
-        AssessmentRequest(queries=[query])

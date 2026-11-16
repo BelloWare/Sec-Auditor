@@ -43,7 +43,10 @@ def grouped_capabilities(provider: str, entries: list[dict[str, Any]]) -> list[d
         selectors = query.get("selectors", {})
         if isinstance(selectors, list):
             query["selectors"] = {
-                name: {"required": name in query.get("required_selectors", [])}
+                name: {
+                    **query.get("selector_schemas", {}).get(name, {}),
+                    "required": name in query.get("required_selectors", []),
+                }
                 for name in selectors
             }
         item["queries"][operation] = query

@@ -30,8 +30,8 @@ account sessions. Use a separately bound server for each account when needed.
 ## ACK deployment example
 
 `deploy/alicloud/kubernetes/` contains a complete deployment example: namespace,
-service account, explicit read-only RBAC, configuration, PVC, hardened single-
-replica deployment, ClusterIP Service and ingress NetworkPolicy.
+service account, explicit read-only RBAC, configuration, hardened deployment,
+ClusterIP Service and ingress NetworkPolicy. No persistent state volume is needed.
 
 Before applying it:
 
@@ -40,8 +40,8 @@ Before applying it:
    and `oidc:sub=system:serviceaccount:sec-auditor:sec-auditor`.
 3. Grant the reviewed metadata policy and, if used, the exact SLS policy.
 4. Replace account, region, cluster ID, RAM role and OIDC provider placeholders.
-   Set an immutable image digest built from this repository. Review the storage
-   class, service resource limits and network rules.
+   Set an immutable image digest built from this repository. Review service
+   resource limits and network rules.
 5. Configure the MCP caller JWT issuer/JWKS/audience/allowed subjects and HTTPS
    gateway as described in [deployment](deployment.md). These caller credentials
    do not become the cloud identity.
@@ -72,9 +72,12 @@ kubectl rollout status deployment/sec-auditor -n sec-auditor
 ```
 
 These are administrator deployment commands. The MCP runtime does not run them.
-Only one deployment in this example should manage the named SQLite PVC; the GKE
-and ACK manifests are alternative starting points, not concurrent installations
-in the same namespace.
+The GKE and ACK manifests use the same resource names and are alternative
+starting points, not concurrent installations in the same namespace. They create
+no database or PVC. The optional `sec-auditor-cursor-key` Secret supplies the shared
+64-hex signing key when cursors must survive rolling updates or multiple replicas;
+see [cursor deployment settings](deployment.md). Without it, each process uses an
+ephemeral key. Limits remain per process.
 
 ## Registered cluster connection
 

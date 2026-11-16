@@ -9,6 +9,30 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal
 
+IDENTIFIER_PATTERN = r"[A-Za-z0-9_@][A-Za-z0-9_.@:+-]{0,255}"
+BUCKET_PATTERN = r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]"
+
+
+def _selector_schema(name: str, parameter: str, required: bool) -> dict[str, Any]:
+    """Describe exactly the bounded selectors accepted by the provider adapter."""
+    schema: dict[str, Any] = {
+        "type": "string",
+        "required": required,
+        "api_parameter": parameter,
+        "pattern": IDENTIFIER_PATTERN,
+        "max_length": 256,
+    }
+    if name in {"start_time", "end_time"}:
+        schema.pop("pattern")
+        schema.update(format="date-time", max_length=40, timezone_required=True)
+    elif name == "policy_type":
+        schema["enum"] = ["Custom", "System"]
+    elif name == "vulnerability_type":
+        schema["enum"] = ["cve", "sys", "cms", "app", "emg", "sca"]
+    elif name == "port":
+        schema.update(pattern=r"[0-9]{1,256}", minimum_value=1, maximum_value=65535)
+    return schema
+
 
 @dataclass(frozen=True)
 class AliOperation:
@@ -66,17 +90,34 @@ class AliResourceSpec:
             "api_action": op.action,
             "api_version": op.version,
             "endpoint": op.endpoint,
+            "method": op.method,
+            "api_path": op.path,
             "permissions": list(self.permissions),
             "scope_type": "account",
+            "scope_types": ["accounts"],
             "scope_notes": "Account is the cloud-resource boundary. Regions restrict API endpoints; home-region security/inventory services may describe assets in other regions.",
             "location_required": op.region_required,
             "requires_location": op.region_required,
             "location_mode": "required" if op.region_required else "none",
             "allowed_locations": list(self.allowed_regions),
             "selectors": [key for key, _ in self.selectors],
+            "selector_schemas": {
+                key: _selector_schema(key, parameter, key in self.required_selectors)
+                for key, parameter in self.selectors
+            },
             "required_selectors": list(self.required_selectors),
             "parent_required": self.parent_parameter is not None,
+            "requires_parent": self.parent_parameter is not None,
+            "parent_format": self.parent_parameter,
+            "parent_pattern": IDENTIFIER_PATTERN if self.parent_parameter else None,
             "resource_id_required": self.resource_parameter is not None,
+            "requires_resource_id": self.resource_parameter is not None,
+            "resource_id_parameter": self.resource_parameter,
+            "resource_id_pattern": (
+                BUCKET_PATTERN if self.resource_parameter == "BucketName" else IDENTIFIER_PATTERN
+            )
+            if self.resource_parameter
+            else None,
             "pagination": self.pagination,
             "max_page_size": self.max_page_size,
             "min_page_size": self.min_page_size,

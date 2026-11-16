@@ -1,4 +1,4 @@
-"""Real provider adapters behind the shared authorization/evidence service."""
+"""Real provider adapters behind the stateless cloud connector."""
 
 import json
 from collections import deque
@@ -7,11 +7,11 @@ import pytest
 from pydantic import ValidationError
 
 from sec_auditor.config import Settings
+from sec_auditor.connector import CloudConnector
 from sec_auditor.models import CollectionResult, ResourceRecord
 from sec_auditor.providers.alicloud import AlibabaProvider
 from sec_auditor.providers.gcp import GCPProvider
-from sec_auditor.requests import AssessmentRequest, KubernetesQuery, LogQuery, ResourceQuery
-from sec_auditor.service import SecurityService
+from sec_auditor.requests import KubernetesQuery, LogQuery, ResourceQuery
 
 ACCOUNT = "1234567890123456"
 OTHER_ACCOUNT = "9876543210987654"
@@ -122,13 +122,12 @@ def make_service(tmp_path, *, google=(), alibaba=(), registered=False, **setting
         allowed_organizations=["123"],
         allowed_alicloud_accounts=[ACCOUNT],
         allowed_alicloud_regions=[REGION],
-        state_path=tmp_path / "state.sqlite3",
         **settings,
     )
     google_client = GoogleClient(*google)
     alibaba_client = AlibabaClient(config, *alibaba)
     kubernetes = Kubernetes()
-    return SecurityService(
+    return CloudConnector(
         config,
         client=google_client,
         gcp=GCPProvider(google_client),
@@ -152,15 +151,6 @@ def ali_query(**kwargs):
     }
     values.update(kwargs)
     return ResourceQuery(**values)
-
-
-async def execute_assessment(service, request):
-    queued = await service.start_assessment("agent-a", request)
-    job = service.store.claim()
-    assert job["id"] == queued["assessment_id"]
-    result = await service._assessment("agent-a", request, job_id=job["id"])
-    service.store.finish(job["id"], result)
-    return result
 
 
 @pytest.mark.parametrize(
@@ -211,11 +201,9 @@ async def test_legacy_gcp_and_alibaba_bulk_route_and_project_evidence(tmp_path):
     assert second["items"][0]["provider"] == "alicloud"
     assert second["items"][0]["account_id"] == ACCOUNT
     assert service.alicloud_client.calls[0][:3] == (ACCOUNT, "ecs.DescribeInstances", REGION)
-    evidence = await service.evidence("agent-a", second["evidence_id"])
     assert "ALI-BOOTSTRAP-SECRET" not in json.dumps(response)
-    assert "ALI-BOOTSTRAP-SECRET" not in json.dumps(evidence)
-    with pytest.raises(ValueError, match="not found"):
-        await service.evidence("other-agent", second["evidence_id"])
+    assert "evidence_id" not in second
+    assert not list(tmp_path.iterdir())
     await service.close()
 
 
@@ -358,10 +346,11 @@ async def test_registered_ack_is_scoped_and_uses_shared_projection(tmp_path):
     await service.close()
 
 
-async def test_explicit_assessment_query_works_without_fake_check_coverage(tmp_path):
+async def test_explicit_native_get_returns_data_without_assessment(tmp_path):
     service = make_service(tmp_path, google=({"spec": {"rules": [{"enforce": True}]}},))
-    request = AssessmentRequest(
-        queries=[
+    result = await service.collect_resources(
+        "agent-a",
+        [
             ResourceQuery(
                 kind="gcp.orgpolicy.effectivePolicies",
                 scope="organizations/123",
@@ -369,66 +358,11 @@ async def test_explicit_assessment_query_works_without_fake_check_coverage(tmp_p
                 resource_id="compute.requireOsLogin",
             )
         ],
-        resource_kinds=[],
-        check_ids=[],
-        include_kubernetes=False,
     )
-    result = await execute_assessment(service, request)
-    assert result["coverage"]["collections_complete"] == 1
-    assert result["coverage"]["resources_examined"] == 1
-    assert result["coverage"]["checks_evaluated"] == 0
-    assert any("No applicable checks" in message for message in result["warnings"])
-    assert result["findings"] == []
-    assert len(result["evidence_pages"]) == 1
-    assert result["evidence_pages"][0]["kind"] == "gcp.orgpolicy.effectivePolicies"
-    evidence_id = result["evidence_pages"][0]["evidence_id"]
-    evidence = await service.evidence("agent-a", evidence_id)
-    assert evidence["items"][0]["data"]["spec"]["rules"][0]["enforce"]
-    with pytest.raises(ValueError, match="not found"):
-        await service.evidence("other-agent", evidence_id)
-    await service.close()
-
-
-async def test_alibaba_assessment_respects_page_budget_and_reports_incomplete(tmp_path):
-    service = make_service(
-        tmp_path,
-        max_scan_pages=2,
-        alibaba=(
-            {"Instances": {"Instance": [{"InstanceId": "i-first"}]}, "NextToken": "more-1"},
-            {"Instances": {"Instance": [{"InstanceId": "i-second"}]}, "NextToken": "more-2"},
-        ),
-    )
-    request = AssessmentRequest(
-        accounts=[ACCOUNT],
-        locations=[REGION],
-        resource_kinds=["alicloud.ecs.instances"],
-        check_ids=[],
-        include_kubernetes=False,
-    )
-    result = await execute_assessment(service, request)
-    assert len(service.alicloud_client.calls) == 2
-    assert result["coverage"]["api_pages"] == 2
-    assert result["coverage"]["collections_incomplete"] == 1
-    assert result["coverage"]["accounts_attempted"] == 1
-    assert "max_scan_pages" in result["limits_reached"]
-    assert not result["coverage_complete"]
-    assert not service.client.calls
-    await service.close()
-
-
-async def test_alibaba_assessment_requires_explicit_nested_queries(tmp_path):
-    service = make_service(tmp_path)
-    request = AssessmentRequest(
-        accounts=[ACCOUNT],
-        locations=[REGION],
-        resource_kinds=["alicloud.ecs.securityGroupRules"],
-        check_ids=[],
-        include_kubernetes=False,
-    )
-    result = await execute_assessment(service, request)
-    assert not result["coverage_complete"]
-    assert result["errors"][0]["code"] == "EXPLICIT_QUERY_REQUIRED"
-    assert service.alicloud_client.calls == []
+    page = result["results"][0]
+    assert page["coverage"]["collection_complete"]
+    assert page["items"][0]["data"]["spec"]["rules"][0]["enforce"]
+    assert "evidence_id" not in page
     await service.close()
 
 
@@ -443,4 +377,30 @@ async def test_discovery_has_uniform_per_operation_requirements_for_both_provide
             for operation in kind["operations"]:
                 assert operation in kind["queries"]
                 assert kind["queries"][operation]["scope_types"]
+    await service.close()
+
+
+async def test_paginated_alibaba_get_can_follow_its_continuation(tmp_path):
+    data = {
+        "Items": {
+            "DBInstanceIPArray": [
+                {"DBInstanceIPArrayName": "first", "SecurityIPList": "10.0.0.0/24"},
+                {"DBInstanceIPArrayName": "second", "SecurityIPList": "10.1.0.0/24"},
+            ]
+        }
+    }
+    service = make_service(tmp_path, alibaba=(data, data))
+    query = ali_query(
+        kind="alicloud.rds.ipAllowlists", operation="get", resource_id="rm-test", page_size=1
+    )
+    first = (await service.collect_resources("caller", [query]))["results"][0]
+    assert first["next_cursor"]
+    assert len(first["items"]) == 1
+    next_query = query.model_copy(update={"cursor": first["next_cursor"]})
+    second = (await service.collect_resources("caller", [next_query]))["results"][0]
+    assert second["coverage"]["collection_complete"]
+    assert second["next_cursor"] is None
+    assert len(second["items"]) == 1
+    assert first["items"][0]["name"] != second["items"][0]["name"]
+    assert len(service.alicloud_client.calls) == 2
     await service.close()

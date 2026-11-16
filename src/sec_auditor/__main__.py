@@ -3,30 +3,29 @@
 import argparse
 import getpass
 import hashlib
+import importlib.util
 import json
 import logging
 import sys
 
-from sec_auditor.checks import list_checks
 from sec_auditor.config import Settings
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="sec-auditor", description="Restricted cloud security MCP"
+        prog="sec-auditor", description="Read-only cloud connector with optional MCP transport"
     )
     commands = parser.add_subparsers(dest="command", required=True)
     serve = commands.add_parser("serve", help="Run the MCP server")
     serve.add_argument("--transport", choices=["stdio", "http"], default="stdio")
     serve.add_argument("--host", default=None)
     serve.add_argument("--port", default=None, type=int)
-    commands.add_parser(
-        "checks", help="Print the deterministic check catalogue without cloud credentials"
-    )
     catalog = commands.add_parser(
         "catalog", help="Print the compiled query contract without cloud credentials"
     )
-    catalog.add_argument("--provider", choices=["gcp", "alicloud", "all"], default="all")
+    catalog.add_argument(
+        "--provider", choices=["gcp", "alicloud", "kubernetes", "all"], default="all"
+    )
     commands.add_parser(
         "ram-policy",
         help="Print an Alibaba RAM policy for compiled metadata reads; review scopes before granting",
@@ -35,19 +34,19 @@ def main() -> None:
         "hash-token", help="Read a machine bearer token privately and print only its SHA-256 digest"
     )
     arguments = parser.parse_args()
-    if arguments.command == "checks":
-        print(json.dumps([check.model_dump() for check in list_checks()], indent=2))
-        return
     if arguments.command == "catalog":
         from sec_auditor.providers.alicloud_catalog import capabilities
         from sec_auditor.providers.capabilities import grouped_capabilities
         from sec_auditor.providers.gcp import GCPProvider
+        from sec_auditor.providers.kubernetes import KubernetesProvider
 
         result = {}
         if arguments.provider in {"all", "gcp"}:
             result["gcp"] = grouped_capabilities("gcp", GCPProvider(None).capabilities())
         if arguments.provider in {"all", "alicloud"}:
             result["alicloud"] = grouped_capabilities("alicloud", capabilities())
+        if arguments.provider in {"all", "kubernetes"}:
+            result["kubernetes"] = KubernetesProvider(None).capabilities()
         print(json.dumps(result, indent=2))
         return
     if arguments.command == "ram-policy":
@@ -75,6 +74,10 @@ def main() -> None:
             parser.error("Use a randomly generated token of at least 32 characters")
         print(hashlib.sha256(token.encode()).hexdigest())
         return
+    if any(importlib.util.find_spec(name) is None for name in ("mcp", "jwt", "uvicorn")):
+        parser.error(
+            "The MCP transport is optional. Install it with: pip install 'sec-auditor[mcp]'"
+        )
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -103,7 +106,7 @@ def main() -> None:
         # Configuration exceptions never print token values or complete environment settings.
         logging.getLogger("sec_auditor").error("Startup failed: %s", type(exc).__name__)
         print(
-            "Invalid configuration or unavailable state directory. See docs/deployment.md and the configured scope/authentication settings.",
+            "Invalid configuration. See docs/deployment.md and the configured scope/authentication settings.",
             file=sys.stderr,
         )
         raise SystemExit(2) from None

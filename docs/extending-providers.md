@@ -1,78 +1,78 @@
-# Extending query coverage
+# Extending read coverage
 
-GCP and Alibaba Cloud implement the same `CloudProvider.query_resources` contract.
-The MCP accepts explicit `provider`, `kind`, a GCP project/scope or Alibaba account,
-operation, location, parent, resource ID, declared selectors, page size and cursor.
-Existing GCP requests without `provider` remain valid and default to `gcp`.
+The connector exposes reviewed queries, not arbitrary CLI or HTTP execution.
+GCP and Alibaba implement the `CloudProvider.query_resources` contract. Query
+inputs select the provider/kind, project or canonical scope/account, operation,
+location, parent, resource ID, declared selectors, page size and continuation.
+Kubernetes has a fixed kind-to-route mapping for list and exact get.
 
 ## Shared contract
 
-`capabilities()` describes compiled query operations. The MCP groups them by
-resource kind with an `operations` list and a `queries` map containing the exact
-requirements for each operation. `sec-auditor catalog` exposes the same discovery
-shape offline, without cloud credentials. A `CollectionResult` includes:
+`capabilities()` groups cloud kinds with `operations` and a `queries` map containing
+exact requirements for each operation. Offline `sec-auditor catalog` exposes the
+catalog without credentials. A provider `CollectionResult` contains:
 
-- Native-shaped `ResourceRecord` observations with provider, canonical name,
-  project or account, location, source, observation time and freshness.
-- A native continuation token; the service replaces it with an authenticated,
-  expiring cursor bound to the caller, operation and complete query.
-- Safe source errors, partial-result warnings and relevant API metadata.
+- Native-shaped `ResourceRecord` observations with provider, canonical identity,
+  project/account, location, source and observation/freshness metadata.
+- A native continuation token, replaced at the connector boundary with a signed,
+  expiring caller/query-bound cursor.
+- Source errors, warnings and relevant API metadata.
 
-GCP verifies project identity and organization ancestry. Alibaba verifies the
-actual credential account with STS before signing resource requests. These are
-separate authorization implementations. Alibaba's region allowlist restricts
-API endpoints and service home regions; inventory/findings can reference other
-resource regions within the same verified account. Account-global and regional
-operations are explicit in capabilities.
+Provider observations are internal. `CloudConnector` is the reusable public
+boundary because it applies scope validation, mandatory projection and budgets.
+Do not expose a raw provider as an alternative agent tool.
 
-## Adding a cloud query
+## Adding a query
 
-1. Review the primary API schema, authorization reference, native pagination,
-   locations, required inputs and every returned field. A method named `Get` or
-   `Describe` can return passwords or key material. This review excluded Alibaba
-   `DescribeDBInstanceSSL` because it can return a private key.
-2. Add a fixed spec in `providers/catalog.py` / `providers/gcp_queries.py` for GCP,
-   or `providers/alicloud_catalog.py` for Alibaba. Declare exact permissions and
-   selector requirements. Never accept arbitrary methods, actions, URLs, fields,
-   response paths or request bodies from the agent.
-3. Enforce scope at the resource boundary. A global bucket name is insufficient:
-   prove its owning project/account before reading its settings. A nested parent
-   must belong to the authorized root. Do not trust endpoint URLs returned in data.
-4. Preserve native continuation, partial failures and freshness. Empty pages can
-   still have a continuation. Observe service-specific minimum/maximum page sizes.
-5. Add deterministic content projection before persistence or MCP output. Prefer
-   excluding an unsafe API entirely when it intrinsically returns secret payloads.
-6. Add realistic positive, denial, malformed-response, pagination, scope-escape,
-   credential/data minimization and relevant transport tests. Update the question
-   matrix and coverage reference. Validate the deployed identity in a test account.
+1. Review the primary API schema, authorization reference, locations, required
+   inputs, every returned field and native pagination. A Get or Describe method
+   can return passwords or private keys. For example, Alibaba
+   `DescribeDBInstanceSSL` is excluded because its response can contain a private
+   server key.
+2. Add a fixed specification in `providers/catalog.py` / `providers/gcp_queries.py`
+   for GCP, or `providers/alicloud_catalog.py` for Alibaba. Declare exact required
+   permissions, parent/resource identifiers, selector validation and operation
+   semantics. Never accept caller-defined actions, URLs or native request bodies.
+3. Prove scope at the resource boundary. Verify globally named bucket ownership;
+   constrain nested parents to the authorized root; prove the Alibaba credential
+   account independently of query arguments. Never follow an endpoint URL found
+   inside an untrusted resource record.
+4. Preserve native continuation, freshness and partial errors. An empty page may
+   still have a next token. Respect API-specific minimum/maximum page sizes and
+   page-number versus token semantics.
+5. Define content projection before returning data. Prefer excluding an API that
+   intrinsically retrieves forbidden content, even if output redaction seems
+   possible. Optional output fields operate only after this mandatory projection.
+6. Add meaningful positive, denial, malformed-response, pagination, ownership,
+   projection and transport tests. Update the coverage table and capability
+   metadata. Validate representative reads with the deployed identity separately.
 
-Google POST reads and Alibaba's signed read routes are individually constrained.
-Do not broaden transport rules from `GET`/`list` naming alone. CAI RESOURCE reads
-also have an asset-type allowlist; inventory must not bypass the content boundary.
+Google POST reads and Alibaba signed actions are constrained independently at the
+transport. CAI resource snapshots also have an explicit asset-type allowlist.
+Do not widen these boundaries based only on HTTP method or an API name.
 
-## Adding a check
+## Extending Kubernetes reads
 
-`checks.py` and `checks_alicloud.py` are pure metadata evaluators. Predicates make
-no network or filesystem calls. Define a stable ID, native resource kind, fixed
-summary, evidence paths, rule version, severity and policy assumptions. Missing,
-inherited or malformed evidence yields `unknown`. Inspect all relevant resources
-before claiming effective IAM access, routing or admission behavior; an isolated
-configuration flag does not establish those properties.
+Add only reviewed kinds with a fixed group/version/plural, namespaced flag and
+safe output projection. Lists and gets must share the allowlist. An exact get
+requires one object name and a namespace for namespaced kinds; no caller path or
+subresource is accepted. Validate returned kind/name/namespace before exposing it.
+Update explicit read-only RBAC examples for the same resources and `get`/`list`
+verbs. Do not add Secrets, ConfigMaps, arbitrary CRDs, execution or log subresources
+as a shortcut to broader coverage.
 
-Return fixed explanations and paths, not arbitrary values copied from resource
-documents. Test meaningful pass/fail cases, missing evidence, defaults, malformed
-shapes and provider-specific exceptions. New check registrations automatically
-appear in `list_security_checks` and `sec-auditor checks`.
+## Deployment-specific integrations
 
-## Deployment-specific extensions
+One process currently has one Alibaba credential binding. Multi-account role
+routing requires an operator-controlled role map, separate immutable credential
+sessions and independent STS proof for each account. Listing Resource Directory
+accounts does not create access to them.
 
-This release has one default Alibaba credential binding per process. Multi-account
-role routing would require an operator-controlled role map, separate immutable
-credential sessions and STS verification for each target account. Resource
-Directory membership alone must never authorize a member account query.
+Additional private endpoints, service-specific log formats and custom Kubernetes
+resources require reviewed adapters. ACK accepts operator-configured endpoint,
+CA and token bindings; it never accepts agent-supplied kubeconfigs or executable
+authentication plugins.
 
-Private Alibaba endpoints, additional service-specific log formats and custom
-Kubernetes resources require reviewed adapters. The registered ACK reader accepts
-only operator-configured endpoint/CA/token bindings and reuses the same explicit
-Kubernetes kind allowlist as GKE. Agent-supplied kubeconfigs and executable auth
-plugins are outside this extension boundary.
+Policy evaluation, findings persistence and inspection workflows belong in the
+calling agent/application. A new read query does not need a built-in assessment
+rule or background job to become available.

@@ -1,6 +1,6 @@
-# Kubernetes evidence collection on GKE and ACK
+# Kubernetes reads on GKE and ACK
 
-The Kubernetes collector reads selected collections from each target cluster's
+The Kubernetes collector lists approved kinds or gets one named object from each target cluster's
 Kubernetes API. It discovers the endpoint and CA using the GKE API, then sends a
 short-lived Google OAuth access token obtained through Application Default
 Credentials (ADC). No `gcloud`, `kubectl`, kubeconfig exec plugin, service-account
@@ -29,7 +29,7 @@ References:
 
 ## Control-plane endpoint selection
 
-The `endpoint_preference` setting accepts:
+The `SEC_AUDITOR_KUBERNETES_ENDPOINT` setting accepts:
 
 | Value | Selection |
 | --- | --- |
@@ -67,8 +67,8 @@ References:
 ## Supported collections
 
 The `capabilities` tool is the machine-readable source of the supported kinds.
-The current collector implements list operations for these stable Kubernetes API
-collections:
+The current collector implements list and exact-get operations for these 29 stable
+Kubernetes API kinds:
 
 | API | Kinds |
 | --- | --- |
@@ -93,7 +93,11 @@ availability does not imply permission coverage.
 The adapter returns internal `ResourceRecord` values with kind names such as
 `k8s.Pod`. Record names include the cluster, namespace where applicable, resource
 plural, and object name. A namespaced collection can be requested for one namespace
-or all namespaces. Supplying a namespace for a cluster-wide kind is rejected.
+or all namespaces. For exact reads, set `operation=get`, `resource_id` to one
+object name, and `namespace` for a namespaced kind. The name must not contain a
+path, subresource or URL. Supplying a namespace for a cluster-wide kind is rejected.
+The reader verifies the response kind/name/namespace against the exact request.
+Exact gets use the same allowlist and projection as lists and need no pagination.
 
 Each call returns one bounded page. The default page size is 100 and the maximum
 is 500; responses larger than 8 MiB are rejected with a request to reduce page
@@ -103,8 +107,9 @@ complete. A 410 response means the continuation snapshot expired; restart the
 collection and do not combine observations as if they were one consistent snapshot.
 Different resource kinds and clusters do not share an atomic snapshot.
 
-Raw adapter definitions are internal inputs to checks. The service must apply its
-output projection before returning any records or evidence to the agent. Pod specs
+Raw adapter definitions are internal. `CloudConnector` applies mandatory output
+projection before returning any records to the agent; use this public boundary
+when embedding the reader. Pod specs
 can contain inline environment values, arguments, annotations, and other free
 text even without reading Secret objects. Returned resource strings are untrusted
 evidence and must never grant authority or request additional tool execution.

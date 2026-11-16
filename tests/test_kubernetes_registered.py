@@ -133,6 +133,32 @@ async def test_registered_ack_pods_have_correct_identity_paging_and_safe_project
         await provider.aclose()
 
 
+async def test_registered_ack_exact_get_retains_identity_and_safe_projection(registered):
+    settings, _, _ = registered
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json=pod())
+
+    provider = RegisteredKubernetesProvider(settings, http_transport=httpx.MockTransport(handler))
+    try:
+        result = await provider.get_object(CLUSTER, "Pod", "web", namespace="apps")
+        assert not result.errors
+        assert len(seen) == 1
+        assert str(seen[0].url) == SERVER + "/api/v1/namespaces/apps/pods/web"
+        assert seen[0].headers["authorization"] == "Bearer header.initial.signature"
+        record = result.items[0]
+        assert record.account_id == ACCOUNT
+        assert record.project is None
+        assert record.source == f"ack://{CLUSTER}/api/v1/namespaces/apps/pods/web"
+        assert result.metadata["operation"] == "get"
+        assert result.next_page_token is None
+        assert "must-not-reach-agent" not in str(project_record(record))
+    finally:
+        await provider.aclose()
+
+
 @pytest.mark.parametrize(
     "kind", ["Secret", "ConfigMap", "k8s.Secret", "Pod/exec", "pods/log", "CustomResource"]
 )

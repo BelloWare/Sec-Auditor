@@ -14,6 +14,8 @@ from urllib.parse import unquote
 
 from sec_auditor.models import CollectionError, CollectionResult, ResourceRecord
 from sec_auditor.providers.alicloud_catalog import (
+    BUCKET_PATTERN,
+    IDENTIFIER_PATTERN,
     OPERATIONS,
     QUERY_SPECS,
     AliResourceSpec,
@@ -23,8 +25,8 @@ from sec_auditor.transport import CloudAPIError
 
 _ACCOUNT = re.compile(r"[0-9]{6,32}\Z")
 _REGION = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+){1,5}\Z")
-_IDENTIFIER = re.compile(r"[A-Za-z0-9_@][A-Za-z0-9_.@:+-]{0,255}\Z")
-_BUCKET = re.compile(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\Z")
+_IDENTIFIER = re.compile(IDENTIFIER_PATTERN + r"\Z")
+_BUCKET = re.compile(BUCKET_PATTERN + r"\Z")
 _MISSING = object()
 
 
@@ -362,7 +364,7 @@ class AlibabaProvider:
                 )
             if len(raw) > effective_size:
                 result.warnings.append(
-                    "Upstream exceeded the requested page size. Returned items are retained; output and evidence budgets still apply."
+                    "Upstream exceeded the requested page size. All returned items remain subject to the connector's whole-page response budget."
                 )
             for item in raw:
                 data, omitted = _security_summary(kind, _decode_policy_documents(item))
